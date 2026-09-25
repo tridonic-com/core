@@ -9,7 +9,12 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .coordinator import DaliCoordinator
 
-PLATFORMS: list[Platform] = [Platform.LIGHT]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.LIGHT,
+    Platform.SENSOR,
+]
 
 
 type DaliConfigEntry = ConfigEntry[DaliCoordinator]
@@ -31,6 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool
         coordinator.close()
         raise
     entry.runtime_data = coordinator
+    coordinator.start_event_listener()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

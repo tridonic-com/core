@@ -19,12 +19,10 @@ from dali.gear.sequences import SetDT8ColourValueTc
 from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
-from .const import DOMAIN
 from .coordinator import DaliCoordinator
 
 PARALLEL_UPDATES = 1
@@ -66,27 +64,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         super().__init__(coordinator)
         self._address = address
         self._attr_unique_id = f"{entry_id}_{address}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._attr_unique_id)},
-            name=f"{title} gear {address}",
-            model=(
-                f"GTIN {coordinator.data[address].gtin}"
-                if coordinator.data[address].gtin is not None
-                else "DALI control gear"
-            ),
-            model_id=(
-                str(coordinator.data[address].gtin)
-                if coordinator.data[address].gtin is not None
-                else None
-            ),
-            serial_number=(
-                str(coordinator.data[address].identification_number)
-                if coordinator.data[address].identification_number is not None
-                else None
-            ),
-            sw_version=coordinator.data[address].firmware_version,
-            hw_version=coordinator.data[address].hardware_version,
-        )
+        self._attr_device_info = coordinator.device_info(entry_id, title, address)
         gear_data = coordinator.data[address]
         self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         if gear_data.supports_color_temperature:

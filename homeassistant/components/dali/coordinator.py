@@ -1,11 +1,13 @@
 """Data update coordinator for the Tridonic DALI integration."""
 
+import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
 from typing import override
 
-from dali.address import GearShort
+from dali.address import DeviceShort, GearShort
 from dali.driver.serial import DriverLubaRs232
 from dali.exceptions import (
     DALISequenceError,
@@ -21,6 +23,7 @@ from dali.sequences import QueryDeviceTypes
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
@@ -30,10 +33,20 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class DaliGearData:
+class DaliDeviceData:
+    """Identification data shared by DALI gears and input devices."""
+
+    gtin: int | None = None
+    identification_number: int | None = None
+    firmware_version: str | None = None
+    hardware_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DaliGearData(DaliDeviceData):
     """State and identification data for one DALI control gear."""
 
-    level: int | None
+    level: int | None = None
     min_level: int = 1
     linear_dimming: bool = False
     device_types: tuple[int, ...] = ()
@@ -43,10 +56,6 @@ class DaliGearData:
     color_temp_min_mired: int | None = None
     color_temp_max_mired: int | None = None
     xy_color: tuple[float, float] | None = None
-    gtin: int | None = None
-    identification_number: int | None = None
-    firmware_version: str | None = None
-    hardware_version: str | None = None
 
 
 class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
@@ -67,7 +76,50 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             update_interval=SCAN_INTERVAL,
         )
         self.driver = driver
-        self._metadata: dict[int, DaliGearData] = {}
+        self._metadata: dict[int, DaliDeviceData] = {}
+        self._device_metadata: dict[int, DaliDeviceData] = {}
+        self._event_listeners: set[Callable[[object], None]] = set()
+        self._event_task: asyncio.Task | None = None
+        self.event_data: dict[tuple[int, int], object] = {}
+
+    @property
+    def device_instances(self) -> tuple[tuple[int, int, int], ...]:
+        """Return discovered device instance address/type tuples."""
+        return tuple(
+            (address, instance, instance_type)
+            for (
+                address,
+                instance,
+            ), instance_type in self.driver.dev_inst_map.mapping.items()
+        )
+
+    def async_add_event_listener(
+        self, listener: Callable[[object], None]
+    ) -> Callable[[], None]:
+        """Subscribe to DALI-2 input device events."""
+        self._event_listeners.add(listener)
+
+        def remove_listener() -> None:
+            self._event_listeners.discard(listener)
+
+        return remove_listener
+
+    def start_event_listener(self) -> None:
+        """Start consuming DALI-2 events from the driver."""
+        self._event_task = asyncio.create_task(self._async_event_listener())
+
+    async def _async_event_listener(self) -> None:
+        queue = self.driver.new_dali_rx_queue()
+        while True:
+            event = await queue.get()
+            if not hasattr(event, "short_address"):
+                continue
+            address = event.short_address
+            if address is not None and event.instance_number is not None:
+                key = (address.address, event.instance_number)
+                self.event_data[key] = event
+            for listener in tuple(self._event_listeners):
+                listener(event)
 
     async def _query_gear(self, address: int) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent."""
@@ -162,15 +214,14 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             hardware_version=metadata.hardware_version,
         )
 
-    async def _query_metadata(self, address: GearShort) -> DaliGearData:
+    async def _query_metadata(self, address: GearShort | DeviceShort) -> DaliDeviceData:
         """Read optional identification data from memory bank 0."""
         try:
             values = await self.driver.run_sequence(info.BANK_0.read_all(address))
         except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
-            return DaliGearData(level=None)
+            return DaliDeviceData()
 
-        return DaliGearData(
-            level=None,
+        return DaliDeviceData(
             gtin=values.get(info.GTIN),
             identification_number=values.get(info.IdentificationNumber),
             firmware_version=values.get(info.FirmwareVersion),
@@ -185,12 +236,38 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             gear = await self._query_gear(address)
             if gear is not None:
                 data[address] = gear
+        for address, _instance in self.driver.dev_inst_map.mapping:
+            if address not in self._device_metadata:
+                self._device_metadata[address] = await self._query_metadata(
+                    DeviceShort(address)
+                )
         return data
 
     def close(self) -> None:
         """Close the serial transport."""
+        if self._event_task:
+            self._event_task.cancel()
         if transport := getattr(self.driver, "_transport", None):
             transport.close()
+
+    def device_info(self, entry_id: str, title: str, address: int) -> DeviceInfo:
+        """Return shared device information for a DALI gear address."""
+        gear = self.data.get(address) or self._device_metadata.get(address)
+        if gear is None:
+            gear = DaliDeviceData()
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{entry_id}_{address}")},
+            name=f"{title} gear {address}",
+            model=f"GTIN {gear.gtin}" if gear.gtin is not None else "DALI control gear",
+            model_id=str(gear.gtin) if gear.gtin is not None else None,
+            serial_number=(
+                str(gear.identification_number)
+                if gear.identification_number is not None
+                else None
+            ),
+            sw_version=gear.firmware_version,
+            hw_version=gear.hardware_version,
+        )
 
 
 def _dali_level_to_brightness(

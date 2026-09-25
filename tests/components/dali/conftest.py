@@ -55,6 +55,7 @@ class FakeDaliDriver:
             info.HardwareVersion: "2.1",
         }
         self._transport = SimpleNamespace(close=self._close)
+        self.dev_inst_map = SimpleNamespace(mapping={})
 
     async def connect(self, *, scan_dev_inst: bool = False) -> None:
         """Connect to the fake interface."""
