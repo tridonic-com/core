@@ -5,6 +5,11 @@ To update, run python3 -m script.hassfest
 
 USB = [
     {
+        "description": "*usb-dali2*",
+        "domain": "dali",
+        "manufacturer": "*lunatone*",
+    },
+    {
         "description": "*usb 300*",
         "domain": "enocean",
         "manufacturer": "*enocean*",

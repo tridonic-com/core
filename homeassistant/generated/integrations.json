@@ -1288,6 +1288,12 @@
       "config_flow": true,
       "iot_class": "local_polling"
     },
+    "dali": {
+      "name": "Tridonic DALI",
+      "integration_type": "hub",
+      "config_flow": true,
+      "iot_class": "local_polling"
+    },
     "danfoss_air": {
       "name": "Danfoss Air",
       "integration_type": "hub",

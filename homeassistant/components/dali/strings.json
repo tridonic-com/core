@@ -1,0 +1,15 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]"
+    },
+    "step": {
+      "usb_confirm": {
+        "title": "USB-DALI2 interface"
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "domain": "dali",
+  "name": "Tridonic DALI",
+  "codeowners": ["@tridonic-com"],
+  "config_flow": true,
+  "dependencies": ["usb"],
+  "documentation": "https://www.home-assistant.io/integrations/dali",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "quality_scale": "bronze",
+  "requirements": ["python-dali==0.11", "pyserial-asyncio==0.6"],
+  "usb": [
+    {
+      "description": "*usb-dali2*",
+      "manufacturer": "*lunatone*"
+    }
+  ]
+}
