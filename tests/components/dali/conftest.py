@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.command import Command
+from dali.gear.colour import QueryColourTypeFeatures
 from dali.gear.general import (
     QueryActualLevel,
     QueryControlGearPresent,
@@ -63,6 +64,11 @@ class FakeDaliDriver:
         if isinstance(command, QueryDimmingCurve):
             value = 1 if self.linear_dimming.get(address, False) else 0
             return SimpleNamespace(value=SimpleNamespace(as_integer=value))
+        if isinstance(command, QueryColourTypeFeatures):
+            return SimpleNamespace(
+                Tc_capable=False,
+                xy_capable=False,
+            )
         return SimpleNamespace(value=None)
 
     async def run_sequence(self, sequence):

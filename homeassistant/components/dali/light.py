@@ -1,10 +1,19 @@
 """Support for Tridonic DALI lights."""
 
+from collections.abc import Generator
 import math
 from typing import Any, override
 
 from dali.address import GearShort
-from dali.gear.general import DAPC
+from dali.command import Command, Response
+from dali.gear.colour import (
+    Activate,
+    SetTemporaryXCoordinate,
+    SetTemporaryYCoordinate,
+    tc_kelvin_mirek,
+)
+from dali.gear.general import DAPC, DTR0, DTR1
+from dali.gear.sequences import SetDT8ColourValueTc
 
 from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.core import HomeAssistant
@@ -74,6 +83,18 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
             sw_version=coordinator.data[address].firmware_version,
             hw_version=coordinator.data[address].hardware_version,
         )
+        gear_data = coordinator.data[address]
+        self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+        if gear_data.supports_color_temperature:
+            self._attr_supported_color_modes.add(ColorMode.COLOR_TEMP)
+            self._attr_min_color_temp_kelvin = tc_kelvin_mirek(
+                gear_data.color_temp_max_mired or 500
+            )
+            self._attr_max_color_temp_kelvin = tc_kelvin_mirek(
+                gear_data.color_temp_min_mired or 153
+            )
+        if gear_data.supports_xy:
+            self._attr_supported_color_modes.add(ColorMode.XY)
 
     @property
     @override
@@ -93,11 +114,43 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         """Return the current DALI arc power level."""
         return self.coordinator.data[self._address].level or 0
 
+    @property
+    @override
+    def color_mode(self) -> ColorMode:
+        """Return the currently reported color mode."""
+        gear_data = self.coordinator.data[self._address]
+        if gear_data.supports_xy and gear_data.xy_color is not None:
+            return ColorMode.XY
+        if gear_data.supports_color_temperature and gear_data.color_temp_mired:
+            return ColorMode.COLOR_TEMP
+        return ColorMode.BRIGHTNESS
+
+    @property
+    @override
+    def color_temp_kelvin(self) -> int | None:
+        """Return the current color temperature."""
+        value = self.coordinator.data[self._address].color_temp_mired
+        return tc_kelvin_mirek(value) if value else None
+
+    @property
+    @override
+    def xy_color(self) -> tuple[float, float] | None:
+        """Return the current CIE xy color."""
+        return self.coordinator.data[self._address].xy_color
+
     @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
         brightness = max(1, min(kwargs.get("brightness", 255), 255))
         gear_data = self.coordinator.data[self._address]
+        if color_temp := kwargs.get("color_temp_kelvin"):
+            await self.coordinator.driver.run_sequence(
+                SetDT8ColourValueTc(self._address, tc_kelvin_mirek(color_temp))
+            )
+        if xy_color := kwargs.get("xy_color"):
+            await self.coordinator.driver.run_sequence(
+                _set_xy_color(self._address, xy_color)
+            )
         if gear_data.linear_dimming:
             level = round(
                 gear_data.min_level
@@ -122,3 +175,17 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         """Turn the light off."""
         await self.coordinator.driver.send(DAPC(GearShort(self._address), 0))
         await self.coordinator.async_request_refresh()
+
+
+def _set_xy_color(
+    address: GearShort, xy_color: tuple[float, float]
+) -> Generator[Command, Response | None]:
+    """Create the DT8 sequence for setting an xy color."""
+    for value, command in zip(
+        xy_color, (SetTemporaryXCoordinate, SetTemporaryYCoordinate), strict=True
+    ):
+        raw_value = round(max(0, min(value, 1)) * 65535).to_bytes(2, "little")
+        yield DTR0(raw_value[0])
+        yield DTR1(raw_value[1])
+        yield command(address)
+    yield Activate(address)

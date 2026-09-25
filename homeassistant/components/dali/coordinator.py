@@ -12,8 +12,10 @@ from dali.exceptions import (
     MemoryLocationNotImplemented,
     ResponseError,
 )
+from dali.gear.colour import QueryColourTypeFeatures, QueryColourValueDTR
 from dali.gear.general import QueryActualLevel, QueryControlGearPresent, QueryMinLevel
 from dali.gear.led import QueryDimmingCurve
+from dali.gear.sequences import QueryDT8ColourValue
 from dali.memory import info
 from dali.sequences import QueryDeviceTypes
 
@@ -35,6 +37,12 @@ class DaliGearData:
     min_level: int = 1
     linear_dimming: bool = False
     device_types: tuple[int, ...] = ()
+    supports_color_temperature: bool = False
+    supports_xy: bool = False
+    color_temp_mired: int | None = None
+    color_temp_min_mired: int | None = None
+    color_temp_max_mired: int | None = None
+    xy_color: tuple[float, float] | None = None
     gtin: int | None = None
     identification_number: int | None = None
     firmware_version: str | None = None
@@ -86,6 +94,47 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             if 6 in device_types:
                 curve = await self.driver.send(QueryDimmingCurve(gear_address))
                 linear_dimming = curve.value.as_integer == 1
+            supports_color_temperature = False
+            supports_xy = False
+            color_temp_mired = None
+            color_temp_min_mired = None
+            color_temp_max_mired = None
+            xy_color = None
+            if 8 in device_types:
+                features = await self.driver.send(QueryColourTypeFeatures(gear_address))
+                supports_color_temperature = features.Tc_capable
+                supports_xy = features.xy_capable
+                if supports_color_temperature:
+                    color_temp_mired = await self.driver.run_sequence(
+                        QueryDT8ColourValue(
+                            gear_address, QueryColourValueDTR.ColourTemperatureTC
+                        )
+                    )
+                    color_temp_min_mired = await self.driver.run_sequence(
+                        QueryDT8ColourValue(
+                            gear_address,
+                            QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest,
+                        )
+                    )
+                    color_temp_max_mired = await self.driver.run_sequence(
+                        QueryDT8ColourValue(
+                            gear_address,
+                            QueryColourValueDTR.ColourTemperatureTcPhysicalWarmest,
+                        )
+                    )
+                if supports_xy:
+                    x = await self.driver.run_sequence(
+                        QueryDT8ColourValue(
+                            gear_address, QueryColourValueDTR.XCoordinate
+                        )
+                    )
+                    y = await self.driver.run_sequence(
+                        QueryDT8ColourValue(
+                            gear_address, QueryColourValueDTR.YCoordinate
+                        )
+                    )
+                    if isinstance(x, int) and isinstance(y, int):
+                        xy_color = (x / 65535, y / 65535)
         except (OSError, TimeoutError) as err:
             raise UpdateFailed("Unable to communicate with the DALI interface") from err
         except DALISequenceError:
@@ -101,6 +150,12 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             min_level=min_level,
             linear_dimming=linear_dimming,
             device_types=device_types,
+            supports_color_temperature=supports_color_temperature,
+            supports_xy=supports_xy,
+            color_temp_mired=color_temp_mired,
+            color_temp_min_mired=color_temp_min_mired,
+            color_temp_max_mired=color_temp_max_mired,
+            xy_color=xy_color,
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,
             firmware_version=metadata.firmware_version,
