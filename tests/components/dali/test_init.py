@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, patch
 
+from dali.exceptions import DALISequenceError
+
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
@@ -66,3 +68,62 @@ async def test_setup_entry_with_no_supported_gear(
 
     assert entry.runtime_data.data == {}
     entry.runtime_data.close()
+
+
+async def test_setup_entry_connection_failure(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test setup closes the driver when connection fails."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "connect", side_effect=OSError("offline")),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert fake_dali_driver.closed
+
+
+async def test_setup_entry_refresh_failure(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test setup closes the driver when the first refresh fails."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert fake_dali_driver.closed
+
+
+async def test_setup_entry_dali_sequence_failure(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test setup ignores a gear when its device-type query fails."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "run_sequence", side_effect=DALISequenceError),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert entry.runtime_data.data == {}
+    assert await hass.config_entries.async_unload(entry.entry_id)

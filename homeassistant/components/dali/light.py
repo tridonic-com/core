@@ -6,6 +6,7 @@ from typing import Any, override
 
 from dali.address import GearShort
 from dali.command import Command, Response
+from dali.exceptions import DALISequenceError, ResponseError
 from dali.gear.colour import (
     Activate,
     SetTemporaryXCoordinate,
@@ -17,6 +18,7 @@ from dali.gear.sequences import SetDT8ColourValueTc
 
 from homeassistant.components.light import ColorMode, LightEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -24,6 +26,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import DaliConfigEntry
 from .const import DOMAIN
 from .coordinator import DaliCoordinator
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -141,40 +145,50 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
     @override
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
-        brightness = max(1, min(kwargs.get("brightness", 255), 255))
-        gear_data = self.coordinator.data[self._address]
-        if color_temp := kwargs.get("color_temp_kelvin"):
-            await self.coordinator.driver.run_sequence(
-                SetDT8ColourValueTc(self._address, tc_kelvin_mirek(color_temp))
+        try:
+            brightness = max(1, min(kwargs.get("brightness", 255), 255))
+            gear_data = self.coordinator.data[self._address]
+            if color_temp := kwargs.get("color_temp_kelvin"):
+                await self.coordinator.driver.run_sequence(
+                    SetDT8ColourValueTc(self._address, tc_kelvin_mirek(color_temp))
+                )
+            if xy_color := kwargs.get("xy_color"):
+                await self.coordinator.driver.run_sequence(
+                    _set_xy_color(self._address, xy_color)
+                )
+            if gear_data.linear_dimming:
+                level = round(
+                    gear_data.min_level
+                    + (brightness - 1) * (254 - gear_data.min_level) / 254
+                )
+            else:
+                level = round(
+                    254 + 253 * math.log10(brightness / 255) / 3
+                    if brightness < 255
+                    else 254
+                )
+            await self.coordinator.driver.send(
+                DAPC(
+                    GearShort(self._address),
+                    max(gear_data.min_level, min(level, 254)),
+                )
             )
-        if xy_color := kwargs.get("xy_color"):
-            await self.coordinator.driver.run_sequence(
-                _set_xy_color(self._address, xy_color)
-            )
-        if gear_data.linear_dimming:
-            level = round(
-                gear_data.min_level
-                + (brightness - 1) * (254 - gear_data.min_level) / 254
-            )
-        else:
-            level = round(
-                254 + 253 * math.log10(brightness / 255) / 3
-                if brightness < 255
-                else 254
-            )
-        await self.coordinator.driver.send(
-            DAPC(
-                GearShort(self._address),
-                max(gear_data.min_level, min(level, 254)),
-            )
-        )
-        await self.coordinator.async_request_refresh()
+            await self.coordinator.async_request_refresh()
+        except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
+            raise HomeAssistantError(
+                "Unable to communicate with the DALI gear"
+            ) from err
 
     @override
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off."""
-        await self.coordinator.driver.send(DAPC(GearShort(self._address), 0))
-        await self.coordinator.async_request_refresh()
+        try:
+            await self.coordinator.driver.send(DAPC(GearShort(self._address), 0))
+            await self.coordinator.async_request_refresh()
+        except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
+            raise HomeAssistantError(
+                "Unable to communicate with the DALI gear"
+            ) from err
 
 
 def _set_xy_color(

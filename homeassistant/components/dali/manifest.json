@@ -1,7 +1,7 @@
 {
   "domain": "dali",
   "name": "Tridonic DALI",
-  "codeowners": ["@tridonic-com"],
+  "codeowners": ["@markus-becker-tridonic-com"],
   "config_flow": true,
   "dependencies": ["usb"],
   "documentation": "https://www.home-assistant.io/integrations/dali",
