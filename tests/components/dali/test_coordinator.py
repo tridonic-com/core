@@ -88,3 +88,18 @@ async def test_metadata_success(
     assert gear.identification_number == 1
     assert gear.firmware_version == "1.0"
     assert gear.hardware_version == "2.1"
+
+
+async def test_dt8_color_capabilities(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test DT8 color-space capabilities and values are queried."""
+    gear = await coordinator._query_gear(2)
+
+    assert gear is not None
+    assert gear.supports_color_temperature
+    assert gear.supports_xy
+    assert gear.color_temp_mired == 250
+    assert gear.color_temp_min_mired == 153
+    assert gear.color_temp_max_mired == 500
+    assert gear.xy_color == pytest.approx((0.5, 0.25), abs=1e-5)

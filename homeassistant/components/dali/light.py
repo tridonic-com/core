@@ -99,6 +99,8 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
             )
         if gear_data.supports_xy:
             self._attr_supported_color_modes.add(ColorMode.XY)
+        if len(self._attr_supported_color_modes) > 1:
+            self._attr_supported_color_modes.discard(ColorMode.BRIGHTNESS)
 
     @property
     @override

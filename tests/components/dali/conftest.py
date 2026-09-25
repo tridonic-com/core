@@ -5,8 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.command import Command
-from dali.gear.colour import QueryColourTypeFeatures
+from dali.gear.colour import QueryColourTypeFeatures, QueryColourValueDTR
 from dali.gear.general import (
+    DTR0,
     QueryActualLevel,
     QueryControlGearPresent,
     QueryDeviceType,
@@ -39,6 +40,14 @@ class FakeDaliDriver:
         self.levels = {0: 128, 2: 254}
         self.min_levels = {0: 86, 2: 1}
         self.linear_dimming = {0: True}
+        self.color_features = {2: (True, True)}
+        self.color_values = {
+            QueryColourValueDTR.ColourTemperatureTC: 250,
+            QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest: 153,
+            QueryColourValueDTR.ColourTemperatureTcPhysicalWarmest: 500,
+            QueryColourValueDTR.XCoordinate: 32768,
+            QueryColourValueDTR.YCoordinate: 16384,
+        }
         self.metadata = {
             info.GTIN: 1234567654321,
             info.IdentificationNumber: 1,
@@ -65,9 +74,10 @@ class FakeDaliDriver:
             value = 1 if self.linear_dimming.get(address, False) else 0
             return SimpleNamespace(value=SimpleNamespace(as_integer=value))
         if isinstance(command, QueryColourTypeFeatures):
+            tc_capable, xy_capable = self.color_features.get(address, (False, False))
             return SimpleNamespace(
-                Tc_capable=False,
-                xy_capable=False,
+                Tc_capable=tc_capable,
+                xy_capable=xy_capable,
             )
         return SimpleNamespace(value=None)
 
@@ -76,6 +86,10 @@ class FakeDaliDriver:
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
+        if isinstance(first_command, QueryActualLevel):
+            dtr_command = next(sequence)
+            assert isinstance(dtr_command, DTR0)
+            return self.color_values.get(dtr_command.param)
         return self.metadata
 
     def _close(self) -> None:
