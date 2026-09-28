@@ -10,6 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import DaliConfigEntry
+from .const import DOMAIN
 from .coordinator import DaliCoordinator
 
 PARALLEL_UPDATES = 0
@@ -33,7 +34,7 @@ class DaliPushbutton(ButtonEntity):
     """Representation of a DALI-2 pushbutton instance."""
 
     _attr_has_entity_name = True
-    _attr_name = "Pushbutton"
+    _attr_translation_key = "pushbutton"
 
     def __init__(
         self,
@@ -66,7 +67,10 @@ class DaliPushbutton(ButtonEntity):
     @override
     async def async_press(self) -> None:
         """Reject commands because this entity represents an input device."""
-        raise HomeAssistantError("DALI pushbuttons are event-driven")
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="pushbutton_not_pressable",
+        )
 
     @callback
     def _handle_event(self, event: object) -> None:

@@ -106,7 +106,7 @@ class DaliIlluminance(SensorEntity):
     """Representation of a DALI-2 relative illuminance instance."""
 
     _attr_has_entity_name = True
-    _attr_name = "Illuminance"
+    _attr_translation_key = "illuminance"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(
@@ -215,6 +215,7 @@ def _description_for_sensor(
         translation_key="part306_sensor",
         native_unit_of_measurement=_unit_for_sensor(data),
         state_class=SensorStateClass.MEASUREMENT,
+        entity_registry_enabled_default=False,
     )
 
 

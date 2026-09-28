@@ -1,9 +1,12 @@
 """Test the Tridonic DALI integration setup."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.exceptions import DALISequenceError
+import pytest
 
+from homeassistant.components.dali import async_remove_config_entry_device
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
@@ -127,3 +130,44 @@ async def test_setup_entry_dali_sequence_failure(
 
     assert entry.runtime_data.data == {}
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("identifiers", "removable"),
+    [
+        pytest.param({(DOMAIN, "ENTRY_0")}, False, id="active_gear"),
+        pytest.param({(DOMAIN, "ENTRY_1")}, False, id="active_input_device"),
+        pytest.param({(DOMAIN, "ENTRY_5")}, True, id="stale_address"),
+        pytest.param({("other", "ENTRY_0")}, True, id="foreign_identifier"),
+    ],
+)
+async def test_remove_config_entry_device(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    identifiers: set[tuple[str, str]],
+    removable: bool,
+) -> None:
+    """Test devices can only be removed once their address stops responding."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 4}
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, entry_id="ENTRY"
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    device_entry = SimpleNamespace(identifiers=identifiers)
+    assert (
+        await async_remove_config_entry_device(hass, entry, device_entry) is removable
+    )
+
+    entry.runtime_data.close()

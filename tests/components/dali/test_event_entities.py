@@ -123,6 +123,7 @@ async def test_part_306_unknown_quantity_is_generic(
     assert entity.device_class is None
     assert entity.native_unit_of_measurement == "ppm"
     assert entity.native_value is None
+    assert entity.entity_registry_enabled_default is False
 
 
 async def test_part_306_sensor_without_unit(

@@ -23,6 +23,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
+from .const import DOMAIN
 from .coordinator import DaliCoordinator
 
 PARALLEL_UPDATES = 1
@@ -157,7 +158,8 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
             await self.coordinator.async_request_refresh()
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
-                "Unable to communicate with the DALI gear"
+                translation_domain=DOMAIN,
+                translation_key="communication_error",
             ) from err
 
     @override
@@ -168,7 +170,8 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
             await self.coordinator.async_request_refresh()
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
-                "Unable to communicate with the DALI gear"
+                translation_domain=DOMAIN,
+                translation_key="communication_error",
             ) from err
 
 

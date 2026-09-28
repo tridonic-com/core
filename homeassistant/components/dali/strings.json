@@ -13,12 +13,20 @@
     }
   },
   "entity": {
+    "button": {
+      "pushbutton": {
+        "name": "Pushbutton"
+      }
+    },
     "sensor": {
       "air_quality_index": {
         "name": "[%key:component::sensor::entity_component::aqi::name%]"
       },
       "co2": {
         "name": "[%key:component::sensor::entity_component::carbon_dioxide::name%]"
+      },
+      "illuminance": {
+        "name": "Illuminance"
       },
       "part306_sensor": {
         "name": "Measurement"
@@ -35,6 +43,17 @@
       "voc": {
         "name": "Volatile organic compounds"
       }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Unable to connect to the DALI interface"
+    },
+    "communication_error": {
+      "message": "Unable to communicate with the DALI gear"
+    },
+    "pushbutton_not_pressable": {
+      "message": "DALI pushbuttons are event-driven and cannot be pressed"
     }
   },
   "issues": {

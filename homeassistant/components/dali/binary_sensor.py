@@ -35,7 +35,6 @@ class DaliOccupancy(BinarySensorEntity):
     """Representation of a DALI-2 occupancy instance."""
 
     _attr_has_entity_name = True
-    _attr_name = "Occupancy"
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
 
     def __init__(

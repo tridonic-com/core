@@ -7,6 +7,7 @@ from homeassistant.const import CONF_DEVICE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.device_registry import AnyDeviceEntry
 
 from .const import DOMAIN, unaddressed_gear_issue_id
 from .coordinator import DaliCoordinator
@@ -30,7 +31,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool
     except (OSError, TimeoutError) as err:
         if transport := getattr(driver, "_transport", None):
             transport.close()
-        raise ConfigEntryNotReady("Unable to connect to the DALI interface") from err
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect",
+        ) from err
     coordinator = DaliCoordinator(hass, driver, entry)
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -56,3 +60,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> boo
 async def async_remove_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
     """Remove repair issues belonging to a removed config entry."""
     ir.async_delete_issue(hass, DOMAIN, unaddressed_gear_issue_id(entry.entry_id))
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: DaliConfigEntry, device_entry: AnyDeviceEntry
+) -> bool:
+    """Allow removing a device only when its address no longer responds."""
+    coordinator = entry.runtime_data
+    active_addresses = set(coordinator.data)
+    active_addresses.update(
+        address for address, _instance, _type in coordinator.device_instances
+    )
+    prefix = f"{entry.entry_id}_"
+    for domain, identifier in device_entry.identifiers:
+        address = identifier.removeprefix(prefix)
+        if domain == DOMAIN and address.isdigit() and int(address) in active_addresses:
+            return False
+    return True
