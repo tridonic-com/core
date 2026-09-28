@@ -36,5 +36,27 @@
         "name": "Volatile organic compounds"
       }
     }
+  },
+  "issues": {
+    "unaddressed_gear": {
+      "fix_flow": {
+        "abort": {
+          "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+          "not_loaded": "The DALI interface {title} is not loaded. Enable or reload the integration entry, then try again.",
+          "program_failed": "A device did not accept its new short address. Check the DALI bus wiring and power, then try again.",
+          "unaddressed_remaining": "Some devices are still without a short address. All 64 short addresses on this DALI bus may be in use. Remove unused devices from the bus, then try again."
+        },
+        "progress": {
+          "assign": "Searching the DALI bus and assigning short addresses. This can take a few minutes, depending on how many devices are connected."
+        },
+        "step": {
+          "confirm": {
+            "description": "Home Assistant found DALI control gear on {title} that has no short address. Without a short address, these lights cannot be controlled individually and do not appear in Home Assistant.\n\nSelect **Submit** to assign free short addresses to these devices. Devices that already have a short address keep it.\n\nIf another DALI controller manages this bus, assign addresses with that controller instead to avoid conflicts.\n\nAfter the addresses are assigned, the new lights appear in Home Assistant automatically.",
+            "title": "Assign DALI short addresses"
+          }
+        }
+      },
+      "title": "DALI devices without a short address on {title}"
+    }
   }
 }

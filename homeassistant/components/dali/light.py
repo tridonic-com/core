@@ -66,9 +66,9 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         self._attr_unique_id = f"{entry_id}_{address}"
         self._attr_device_info = coordinator.device_info(entry_id, title, address)
         gear_data = coordinator.data[address]
-        self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
+        color_modes = {ColorMode.BRIGHTNESS}
         if gear_data.supports_color_temperature:
-            self._attr_supported_color_modes.add(ColorMode.COLOR_TEMP)
+            color_modes.add(ColorMode.COLOR_TEMP)
             self._attr_min_color_temp_kelvin = tc_kelvin_mirek(
                 gear_data.color_temp_max_mired or 500
             )
@@ -76,9 +76,10 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                 gear_data.color_temp_min_mired or 153
             )
         if gear_data.supports_xy:
-            self._attr_supported_color_modes.add(ColorMode.XY)
-        if len(self._attr_supported_color_modes) > 1:
-            self._attr_supported_color_modes.discard(ColorMode.BRIGHTNESS)
+            color_modes.add(ColorMode.XY)
+        if len(color_modes) > 1:
+            color_modes.discard(ColorMode.BRIGHTNESS)
+        self._attr_supported_color_modes = color_modes
 
     @property
     @override

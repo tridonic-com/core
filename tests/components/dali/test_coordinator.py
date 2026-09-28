@@ -5,12 +5,14 @@ from unittest.mock import AsyncMock, patch
 
 from dali.address import DeviceShort, GearShort
 from dali.exceptions import DALISequenceError
+from dali.sequences import progress
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
     DaliCoordinator,
     _dali_level_to_brightness,
+    _log_commissioning_progress,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
@@ -116,10 +118,14 @@ async def test_device_instance_metadata_and_event_listener(
     )
     await coordinator._async_update_data()
     received: list[object] = []
-    coordinator.async_add_event_listener(received.append)
+    remove_listener = coordinator.async_add_event_listener(received.append)
     coordinator.start_event_listener()
 
     event = SimpleNamespace(short_address=DeviceShort(1), instance_number=2)
+    await fake_dali_driver.event_queue.put(object())
+    await fake_dali_driver.event_queue.put(event)
+    await hass.async_block_till_done()
+    remove_listener()
     await fake_dali_driver.event_queue.put(event)
     await hass.async_block_till_done()
 
@@ -129,6 +135,18 @@ async def test_device_instance_metadata_and_event_listener(
     finally:
         coordinator.close()
         await hass.async_block_till_done()
+
+
+async def test_device_info_for_unknown_address(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test device info falls back to defaults without known metadata."""
+    coordinator.data = {}
+
+    device_info = coordinator.device_info("entry", "USB-DALI2", 5)
+
+    assert device_info["model"] == "DALI control gear"
+    assert device_info["serial_number"] is None
 
 
 async def test_part_306_instance_is_discovered(
@@ -164,3 +182,32 @@ async def test_part_306_query_failure_raises_update_failed(
         pytest.raises(UpdateFailed),
     ):
         await coordinator._query_general_sensor(DeviceShort(1), 2)
+
+
+async def test_missing_short_address_query_failure(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a failed missing-short-address query becomes an update failure."""
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._has_unaddressed_gear()
+
+
+@pytest.mark.parametrize(
+    ("update", "logged"),
+    [
+        pytest.param("Addressing complete", True, id="string"),
+        pytest.param(progress(message="Ballast found"), True, id="message"),
+        pytest.param(progress(completed=1, size=2), False, id="no_message"),
+    ],
+)
+def test_commissioning_progress_logging(
+    caplog: pytest.LogCaptureFixture, update: str | progress, logged: bool
+) -> None:
+    """Test commissioning progress messages are logged."""
+    with caplog.at_level("DEBUG"):
+        _log_commissioning_progress(update)
+
+    assert ("Commissioning:" in caplog.text) is logged

@@ -7,7 +7,7 @@ from datetime import timedelta
 import logging
 from typing import override
 
-from dali.address import DeviceShort, GearShort, InstanceNumber
+from dali.address import DeviceShort, GearBroadcast, GearShort, InstanceNumber
 from dali.device.general import DTR0, QueryResolution
 from dali.device.general_sensor import MeasurementVariable, QueryMeasurementVariable
 from dali.driver.serial import DriverLubaRs232
@@ -17,18 +17,24 @@ from dali.exceptions import (
     ResponseError,
 )
 from dali.gear.colour import QueryColourTypeFeatures, QueryColourValueDTR
-from dali.gear.general import QueryActualLevel, QueryControlGearPresent, QueryMinLevel
+from dali.gear.general import (
+    QueryActualLevel,
+    QueryControlGearPresent,
+    QueryMinLevel,
+    QueryMissingShortAddress,
+)
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import QueryDT8ColourValue
 from dali.memory import info
-from dali.sequences import QueryDeviceTypes
+from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN
+from .const import DOMAIN, ISSUE_UNADDRESSED_GEAR, unaddressed_gear_issue_id
 
 SCAN_INTERVAL = timedelta(seconds=30)
 LOGGER = logging.getLogger(__name__)
@@ -73,6 +79,8 @@ class DaliGeneralSensorData(DaliDeviceData):
 
 class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     """Coordinate DALI gear discovery and state updates."""
+
+    config_entry: ConfigEntry
 
     def __init__(
         self,
@@ -324,7 +332,42 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 self.input_devices[
                     (address, instance)
                 ] = await self._query_general_sensor(DeviceShort(address), instance)
+        self._update_unaddressed_gear_issue(await self._has_unaddressed_gear())
         return data
+
+    async def _has_unaddressed_gear(self) -> bool:
+        """Return whether any control gear on the bus lacks a short address."""
+        try:
+            response = await self.driver.send(QueryMissingShortAddress(GearBroadcast()))
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed("Unable to communicate with the DALI interface") from err
+        return bool(response.value)
+
+    def _update_unaddressed_gear_issue(self, unaddressed: bool) -> None:
+        """Create or remove the repair issue for unaddressed control gear."""
+        issue_id = unaddressed_gear_issue_id(self.config_entry.entry_id)
+        if not unaddressed:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            data={"entry_id": self.config_entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_UNADDRESSED_GEAR,
+            translation_placeholders={"title": self.config_entry.title},
+        )
+
+    async def async_assign_short_addresses(self) -> bool:
+        """Address unaddressed control gear and return whether any remain unaddressed."""
+        await self.driver.run_sequence(
+            Commissioning(readdress=False), progress=_log_commissioning_progress
+        )
+        unaddressed = await self._has_unaddressed_gear()
+        await self.async_refresh()
+        return unaddressed
 
     def close(self) -> None:
         """Close the serial transport."""
@@ -372,3 +415,10 @@ def _response_value(response: object) -> int | None:
     """Return a numeric response value."""
     value = getattr(response, "value", None)
     return value if isinstance(value, int) else None
+
+
+def _log_commissioning_progress(update: str | progress) -> None:
+    """Log progress messages from the commissioning sequence."""
+    message = update if isinstance(update, str) else update.message
+    if message:
+        LOGGER.debug("Commissioning: %s", message)

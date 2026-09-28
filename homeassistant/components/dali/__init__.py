@@ -6,7 +6,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DEVICE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import issue_registry as ir
 
+from .const import DOMAIN, unaddressed_gear_issue_id
 from .coordinator import DaliCoordinator
 
 PLATFORMS: list[Platform] = [
@@ -49,3 +51,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> boo
     if unloaded:
         entry.runtime_data.close()
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
+    """Remove repair issues belonging to a removed config entry."""
+    ir.async_delete_issue(hass, DOMAIN, unaddressed_gear_issue_id(entry.entry_id))

@@ -125,6 +125,40 @@ async def test_part_306_unknown_quantity_is_generic(
     assert entity.native_value is None
 
 
+async def test_part_306_sensor_without_unit(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an unmapped Part 306 quantity without a reported unit has no unit."""
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 3)] = DaliGeneralSensorData(quantity_name=1)
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 3)
+
+    assert entity.native_unit_of_measurement is None
+
+
+@pytest.mark.parametrize(
+    "entity_class",
+    [
+        pytest.param(DaliOccupancy, id="occupancy"),
+        pytest.param(DaliPushbutton, id="pushbutton"),
+        pytest.param(DaliIlluminance, id="illuminance"),
+    ],
+)
+@pytest.mark.parametrize("last_update_success", [True, False])
+async def test_input_entity_availability(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    entity_class: type[DaliOccupancy | DaliPushbutton | DaliIlluminance],
+    last_update_success: bool,
+) -> None:
+    """Test input-device entities follow the interface availability."""
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.last_update_success = last_update_success
+    entity = entity_class(coordinator, "entry", "USB-DALI2", 1, 2)
+
+    assert entity.available is last_update_success
+
+
 @pytest.mark.parametrize(
     ("data", "event_value", "expected"),
     [

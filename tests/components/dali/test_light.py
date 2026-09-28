@@ -163,6 +163,22 @@ async def test_color_temperature_only_mode(
     assert light.color_mode is ColorMode.COLOR_TEMP
 
 
+async def test_color_modes_are_not_shared_between_lights(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a DT8 light does not change the color modes of a DT6 light."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        0: DaliGearData(level=128, device_types=(6,)),
+        2: DaliGearData(level=128, device_types=(8,), supports_xy=True),
+    }
+    dt6_light = DaliLight(coordinator, entry.entry_id, entry.title, 0)
+    DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert dt6_light.supported_color_modes == {ColorMode.BRIGHTNESS}
+
+
 def test_set_xy_color_sequence() -> None:
     """Test DT8 xy values are converted to DALI DTR commands."""
     commands = list(_set_xy_color(GearShort(2), (0.25, 0.5)))

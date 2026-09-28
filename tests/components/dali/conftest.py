@@ -20,6 +20,7 @@ from dali.gear.general import (
     QueryControlGearPresent,
     QueryDeviceType,
     QueryMinLevel,
+    QueryMissingShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.memory import info
@@ -73,6 +74,7 @@ class FakeDaliDriver:
         }
         self.resolution = 9
         self._dtr0: int | None = None
+        self.unaddressed_gears: list[tuple[int, ...]] = []
 
     async def connect(self, *, scan_dev_inst: bool = False) -> None:
         """Connect to the fake interface."""
@@ -92,6 +94,8 @@ class FakeDaliDriver:
             return SimpleNamespace(value=self.resolution)
         if isinstance(command, QueryMeasurementVariable):
             return SimpleNamespace(value=self.measurement_variables.get(self._dtr0))
+        if isinstance(command, QueryMissingShortAddress):
+            return SimpleNamespace(value=True if self.unaddressed_gears else None)
         address = command.destination.address
         if isinstance(command, QueryControlGearPresent):
             return SimpleNamespace(value=address in self.gears)
@@ -110,8 +114,13 @@ class FakeDaliDriver:
             )
         return SimpleNamespace(value=None)
 
-    async def run_sequence(self, sequence):
-        """Return a fake device-type or memory-bank response."""
+    async def run_sequence(self, sequence, progress=None):
+        """Return a fake sequence response."""
+        if sequence.__name__ == "Commissioning":
+            sequence.close()
+            # Commissioning takes bus time on real hardware.
+            await asyncio.sleep(0)
+            return self._commission()
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
@@ -120,6 +129,14 @@ class FakeDaliDriver:
             assert isinstance(dtr_command, DTR0)
             return self.color_values.get(dtr_command.param)
         return self.metadata
+
+    def _commission(self) -> None:
+        """Assign free short addresses to unaddressed gear."""
+        free = [address for address in range(64) if address not in self.gears]
+        while self.unaddressed_gears and free:
+            address = free.pop(0)
+            self.gears[address] = self.unaddressed_gears.pop(0)
+            self.levels[address] = 0
 
     def _close(self) -> None:
         """Close the fake transport."""
