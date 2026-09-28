@@ -1,10 +1,18 @@
 """Common fixtures for the Tridonic DALI tests."""
 
+import asyncio
 from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.command import Command
+from dali.device.general import DTR0 as DeviceDTR0, QueryResolution
+from dali.device.general_sensor import (
+    MeasurementVariable,
+    QuantityName,
+    QueryMeasurementVariable,
+    UnitOfMeasurement,
+)
 from dali.gear.colour import QueryColourTypeFeatures, QueryColourValueDTR
 from dali.gear.general import (
     DTR0,
@@ -56,14 +64,34 @@ class FakeDaliDriver:
         }
         self._transport = SimpleNamespace(close=self._close)
         self.dev_inst_map = SimpleNamespace(mapping={})
+        self.event_queue: asyncio.Queue[object] = asyncio.Queue()
+        self.measurement_variables = {
+            MeasurementVariable.INPUT_SIGNAL_SIGNED: 0,
+            MeasurementVariable.UNIT_OF_MEASUREMENT: UnitOfMeasurement.CELSIUS,
+            MeasurementVariable.QUANTITY_NAME: QuantityName.TEMPERATURE,
+            MeasurementVariable.MAGNITUDE: 127,
+        }
+        self.resolution = 9
+        self._dtr0: int | None = None
 
     async def connect(self, *, scan_dev_inst: bool = False) -> None:
         """Connect to the fake interface."""
         self.connected = True
 
+    def new_dali_rx_queue(self) -> asyncio.Queue[object]:
+        """Return the fake DALI event queue."""
+        return self.event_queue
+
     async def send(self, command: Command) -> SimpleNamespace:
         """Return a response for a fake DALI command."""
         self.sent.append(command)
+        if isinstance(command, DeviceDTR0):
+            self._dtr0 = command.param
+            return SimpleNamespace(value=None)
+        if isinstance(command, QueryResolution):
+            return SimpleNamespace(value=self.resolution)
+        if isinstance(command, QueryMeasurementVariable):
+            return SimpleNamespace(value=self.measurement_variables.get(self._dtr0))
         address = command.destination.address
         if isinstance(command, QueryControlGearPresent):
             return SimpleNamespace(value=address in self.gears)

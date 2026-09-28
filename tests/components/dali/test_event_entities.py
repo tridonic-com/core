@@ -3,17 +3,25 @@
 from unittest.mock import patch
 
 from dali.address import DeviceShort
+from dali.device.general_sensor import GeneralSensorEvent, QuantityName
 from dali.device.light import LightEvent
 from dali.device.occupancy import OccupancyEvent
 from dali.device.pushbutton import ButtonPressed
+import pytest
 
 from homeassistant.components.dali.binary_sensor import DaliOccupancy
 from homeassistant.components.dali.button import DaliPushbutton
 from homeassistant.components.dali.const import DOMAIN
-from homeassistant.components.dali.coordinator import DaliCoordinator, DaliGearData
-from homeassistant.components.dali.sensor import DaliIlluminance
-from homeassistant.const import CONF_DEVICE
+from homeassistant.components.dali.coordinator import (
+    DaliCoordinator,
+    DaliGearData,
+    DaliGeneralSensorData,
+)
+from homeassistant.components.dali.sensor import DaliIlluminance, DaliPart306Sensor
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.const import CONF_DEVICE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from .conftest import FakeDaliDriver
 
@@ -33,7 +41,7 @@ async def test_occupancy_event(
 ) -> None:
     """Test occupancy events update the binary sensor."""
     coordinator = _coordinator(hass, fake_dali_driver)
-    entity = DaliOccupancy(coordinator, "entry", 1, 2)
+    entity = DaliOccupancy(coordinator, "entry", "USB-DALI2", 1, 2)
     event = OccupancyEvent(
         short_address=DeviceShort(1),
         instance_number=2,
@@ -50,7 +58,7 @@ async def test_illuminance_event(
 ) -> None:
     """Test illuminance events update the sensor."""
     coordinator = _coordinator(hass, fake_dali_driver)
-    entity = DaliIlluminance(coordinator, "entry", 1, 2)
+    entity = DaliIlluminance(coordinator, "entry", "USB-DALI2", 1, 2)
     event = LightEvent(short_address=DeviceShort(1), instance_number=2, data=512)
     coordinator.event_data[(1, 2)] = event
     with patch.object(entity, "async_write_ha_state"):
@@ -63,9 +71,142 @@ async def test_pushbutton_event(
 ) -> None:
     """Test pushbutton events update button attributes."""
     coordinator = _coordinator(hass, fake_dali_driver)
-    entity = DaliPushbutton(coordinator, "entry", 1, 2)
+    entity = DaliPushbutton(coordinator, "entry", "USB-DALI2", 1, 2)
     event = ButtonPressed(short_address=DeviceShort(1), instance_number=2)
     coordinator.event_data[(1, 2)] = event
     with patch.object(entity, "async_write_ha_state"):
         entity._handle_event(event)
     assert entity.extra_state_attributes == {"last_event": "ButtonPressed"}
+
+    with pytest.raises(HomeAssistantError):
+        await entity.async_press()
+
+
+async def test_part_306_temperature_event(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a Part 306 temperature sensor decodes measurement events."""
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 2)] = DaliGeneralSensorData(
+        quantity_name=QuantityName.TEMPERATURE,
+        unit_of_measurement=9,
+        resolution=9,
+        magnitude=127,
+        input_signal_signed=False,
+    )
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 2)
+
+    event = GeneralSensorEvent(short_address=DeviceShort(1), instance_number=2, data=26)
+    coordinator.event_data[(1, 2)] = event
+    with patch.object(entity, "async_write_ha_state"):
+        entity._handle_event(event)
+
+    assert entity.device_class is SensorDeviceClass.TEMPERATURE
+    assert entity.native_unit_of_measurement == UnitOfTemperature.CELSIUS
+    assert entity.native_value == 26
+
+
+async def test_part_306_unknown_quantity_is_generic(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an unmapped Part 306 quantity becomes a plain measurement sensor."""
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 3)] = DaliGeneralSensorData(
+        quantity_name=1,
+        unit_of_measurement=59,
+        resolution=9,
+        magnitude=127,
+        input_signal_signed=False,
+    )
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 3)
+
+    assert entity.device_class is None
+    assert entity.native_unit_of_measurement == "ppm"
+    assert entity.native_value is None
+
+
+@pytest.mark.parametrize(
+    ("data", "event_value", "expected"),
+    [
+        pytest.param(
+            DaliGeneralSensorData(quantity_name=27),
+            26,
+            26,
+            id="missing_scaling_metadata",
+        ),
+        pytest.param(
+            DaliGeneralSensorData(quantity_name=27, resolution=0, magnitude=127),
+            26,
+            26,
+            id="invalid_resolution",
+        ),
+        pytest.param(
+            DaliGeneralSensorData(quantity_name=27, resolution=6, magnitude=127),
+            82,
+            10,
+            id="low_resolution",
+        ),
+        pytest.param(
+            DaliGeneralSensorData(quantity_name=27, resolution=12, magnitude=127),
+            4,
+            32,
+            id="high_resolution",
+        ),
+        pytest.param(
+            DaliGeneralSensorData(
+                quantity_name=27,
+                resolution=6,
+                magnitude=127,
+                input_signal_signed=True,
+            ),
+            82,
+            -21,
+            id="signed_input",
+        ),
+        pytest.param(
+            DaliGeneralSensorData(quantity_name=27, resolution=9, magnitude=126),
+            265,
+            26.5,
+            id="scaled_magnitude",
+        ),
+    ],
+)
+async def test_part_306_measurement_decoding(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    data: DaliGeneralSensorData,
+    event_value: int,
+    expected: float,
+) -> None:
+    """Test Part 306 event payloads are converted to measured values."""
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 4)] = data
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 4)
+    coordinator.event_data[(1, 4)] = GeneralSensorEvent(
+        short_address=DeviceShort(1), instance_number=4, data=event_value
+    )
+
+    assert entity.native_value == expected
+
+
+async def test_sensor_platform_creates_entities(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the sensor platform creates Part 304 and Part 306 entities."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 4, (1, 3): 6}
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.usb_dali2_gear_1_illuminance") is not None
+    assert hass.states.get("sensor.usb_dali2_gear_1_temperature") is not None
+
+    assert await hass.config_entries.async_unload(entry.entry_id)

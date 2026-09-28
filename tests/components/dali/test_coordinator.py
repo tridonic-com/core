@@ -1,8 +1,9 @@
 """Test the Tridonic DALI coordinator."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from dali.address import GearShort
+from dali.address import DeviceShort, GearShort
 from dali.exceptions import DALISequenceError
 import pytest
 
@@ -103,3 +104,63 @@ async def test_dt8_color_capabilities(
     assert gear.color_temp_min_mired == 153
     assert gear.color_temp_max_mired == 500
     assert gear.xy_color == pytest.approx((0.5, 0.25), abs=1e-5)
+
+
+async def test_device_instance_metadata_and_event_listener(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test device metadata caching and event dispatch."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 3}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+    await coordinator._async_update_data()
+    received: list[object] = []
+    coordinator.async_add_event_listener(received.append)
+    coordinator.start_event_listener()
+
+    event = SimpleNamespace(short_address=DeviceShort(1), instance_number=2)
+    await fake_dali_driver.event_queue.put(event)
+    await hass.async_block_till_done()
+
+    try:
+        assert received == [event]
+        assert coordinator._device_metadata[1].gtin == 1234567654321
+    finally:
+        coordinator.close()
+        await hass.async_block_till_done()
+
+
+async def test_part_306_instance_is_discovered(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test Part 306 instances are queried for measurement metadata."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 6}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    await coordinator._async_update_data()
+
+    sensor = coordinator.input_devices[(1, 2)]
+    assert sensor.quantity_name == 27
+    assert sensor.unit_of_measurement == 9
+    assert sensor.resolution == 9
+    assert sensor.magnitude == 127
+    assert sensor.input_signal_signed is False
+    assert sensor.gtin == 1234567654321
+
+
+async def test_part_306_query_failure_raises_update_failed(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test Part 306 query failures become coordinator update failures."""
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._query_general_sensor(DeviceShort(1), 2)

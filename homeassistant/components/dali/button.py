@@ -23,7 +23,7 @@ async def async_setup_entry(
     """Set up pushbutton entities."""
     coordinator = entry.runtime_data
     async_add_entities(
-        DaliPushbutton(coordinator, entry.entry_id, address, instance)
+        DaliPushbutton(coordinator, entry.entry_id, entry.title, address, instance)
         for address, instance, instance_type in coordinator.device_instances
         if instance_type == 1
     )
@@ -36,14 +36,19 @@ class DaliPushbutton(ButtonEntity):
     _attr_name = "Pushbutton"
 
     def __init__(
-        self, coordinator: DaliCoordinator, entry_id: str, address: int, instance: int
+        self,
+        coordinator: DaliCoordinator,
+        entry_id: str,
+        title: str,
+        address: int,
+        instance: int,
     ) -> None:
         """Initialize the entity."""
         self._coordinator = coordinator
         self._key = (address, instance)
         self._last_event: str | None = None
         self._attr_unique_id = f"{entry_id}_{address}_{instance}_pushbutton"
-        self._attr_device_info = coordinator.device_info(entry_id, "DALI", address)
+        self._attr_device_info = coordinator.device_info(entry_id, title, address)
         coordinator.async_add_event_listener(self._handle_event)
 
     @property

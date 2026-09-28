@@ -7,7 +7,9 @@ from datetime import timedelta
 import logging
 from typing import override
 
-from dali.address import DeviceShort, GearShort
+from dali.address import DeviceShort, GearShort, InstanceNumber
+from dali.device.general import DTR0, QueryResolution
+from dali.device.general_sensor import MeasurementVariable, QueryMeasurementVariable
 from dali.driver.serial import DriverLubaRs232
 from dali.exceptions import (
     DALISequenceError,
@@ -58,6 +60,17 @@ class DaliGearData(DaliDeviceData):
     xy_color: tuple[float, float] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DaliGeneralSensorData(DaliDeviceData):
+    """State and identification data for one Part 306 general sensor."""
+
+    quantity_name: int | None = None
+    unit_of_measurement: int | None = None
+    resolution: int | None = None
+    magnitude: int | None = None
+    input_signal_signed: bool | None = None
+
+
 class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     """Coordinate DALI gear discovery and state updates."""
 
@@ -78,6 +91,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self.driver = driver
         self._metadata: dict[int, DaliDeviceData] = {}
         self._device_metadata: dict[int, DaliDeviceData] = {}
+        self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
         self._event_listeners: set[Callable[[object], None]] = set()
         self._event_task: asyncio.Task | None = None
         self.event_data: dict[tuple[int, int], object] = {}
@@ -86,7 +100,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     def device_instances(self) -> tuple[tuple[int, int, int], ...]:
         """Return discovered device instance address/type tuples."""
         return tuple(
-            (address, instance, instance_type)
+            (getattr(address, "address", address), instance, instance_type)
             for (
                 address,
                 instance,
@@ -228,6 +242,67 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             hardware_version=values.get(info.HardwareVersion),
         )
 
+    async def _query_general_sensor(
+        self, address: DeviceShort, instance: int
+    ) -> DaliGeneralSensorData:
+        """Return metadata for a Part 306 general sensor instance."""
+        instance_address = InstanceNumber(instance)
+        metadata = self._device_metadata.get(address.address)
+        if metadata is None:
+            metadata = await self._query_metadata(address)
+            self._device_metadata[address.address] = metadata
+
+        try:
+            resolution = _response_value(
+                await self.driver.send(QueryResolution(address, instance_address))
+            )
+            input_signal_signed = _response_value(
+                await self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.INPUT_SIGNAL_SIGNED
+                )
+            )
+            unit_of_measurement = _response_value(
+                await self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.UNIT_OF_MEASUREMENT
+                )
+            )
+            quantity_name = _response_value(
+                await self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.QUANTITY_NAME
+                )
+            )
+            magnitude = _response_value(
+                await self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.MAGNITUDE
+                )
+            )
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed("Unable to communicate with the DALI interface") from err
+
+        return DaliGeneralSensorData(
+            quantity_name=quantity_name,
+            unit_of_measurement=unit_of_measurement,
+            resolution=resolution,
+            magnitude=magnitude,
+            input_signal_signed=bool(input_signal_signed)
+            if input_signal_signed is not None
+            else None,
+            gtin=metadata.gtin,
+            identification_number=metadata.identification_number,
+            firmware_version=metadata.firmware_version,
+            hardware_version=metadata.hardware_version,
+        )
+
+    async def _query_measurement_variable(
+        self,
+        address: DeviceShort,
+        instance: InstanceNumber,
+        variable: MeasurementVariable,
+    ) -> object:
+        """Query a Part 306 measurement variable."""
+        await self.driver.send(DTR0(variable))
+        return await self.driver.send(QueryMeasurementVariable(address, instance))
+
     @override
     async def _async_update_data(self) -> dict[int, DaliGearData]:
         """Scan all short addresses and query each responding gear."""
@@ -237,10 +312,18 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             if gear is not None:
                 data[address] = gear
         for address, _instance in self.driver.dev_inst_map.mapping:
-            if address not in self._device_metadata:
-                self._device_metadata[address] = await self._query_metadata(
-                    DeviceShort(address)
+            address_int = getattr(address, "address", address)
+            if address_int not in self._device_metadata:
+                self._device_metadata[address_int] = await self._query_metadata(
+                    address
+                    if isinstance(address, DeviceShort)
+                    else DeviceShort(address)
                 )
+        for address, instance, instance_type in self.device_instances:
+            if instance_type == 6 and (address, instance) not in self.input_devices:
+                self.input_devices[
+                    (address, instance)
+                ] = await self._query_general_sensor(DeviceShort(address), instance)
         return data
 
     def close(self) -> None:
@@ -283,3 +366,9 @@ def _dali_level_to_brightness(
     if linear_dimming:
         return round(1 + (level - min_level) * 254 / (254 - min_level))
     return round(255 * 10 ** (((level - 254) * 3) / 253))
+
+
+def _response_value(response: object) -> int | None:
+    """Return a numeric response value."""
+    value = getattr(response, "value", None)
+    return value if isinstance(value, int) else None
