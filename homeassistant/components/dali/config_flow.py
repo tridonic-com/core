@@ -29,9 +29,10 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_usb(self, discovery_info: UsbServiceInfo) -> ConfigFlowResult:
         """Handle discovery of a Lunatone USB-DALI2 interface."""
         await self.async_set_unique_id(usb_unique_id_from_service_info(discovery_info))
-        self._abort_if_unique_id_configured(
-            updates={CONF_DEVICE: discovery_info.device}
+        self._device = await self.hass.async_add_executor_job(
+            usb.get_serial_by_id, discovery_info.device
         )
+        self._abort_if_unique_id_configured(updates={CONF_DEVICE: self._device})
         self.context["title_placeholders"] = {
             CONF_NAME: human_readable_device_name(
                 discovery_info.device,
@@ -42,9 +43,6 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
                 discovery_info.pid,
             )
         }
-        self._device = await self.hass.async_add_executor_job(
-            usb.get_serial_by_id, discovery_info.device
-        )
         driver = DriverLubaRs232(uri=f"luba232:{self._device}")
         try:
             await driver.connect()

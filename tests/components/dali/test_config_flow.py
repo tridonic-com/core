@@ -75,19 +75,24 @@ async def test_usb_discovery_cannot_connect(hass: HomeAssistant) -> None:
 
 
 async def test_usb_discovery_already_configured(hass: HomeAssistant) -> None:
-    """Test USB discovery aborts for an already configured interface."""
+    """Test USB rediscovery updates the configured interface path."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=usb_unique_id_from_service_info(DISCOVERY_INFO),
-        data={CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2"},
+        data={CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2-old"},
     )
     entry.add_to_hass(hass)
 
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={CONF_SOURCE: SOURCE_USB},
-        data=DISCOVERY_INFO,
-    )
+    with patch(
+        "homeassistant.components.dali.config_flow.usb.get_serial_by_id",
+        return_value="/dev/serial/by-id/usb-Lunatone_USB-DALI2",
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={CONF_SOURCE: SOURCE_USB},
+            data=DISCOVERY_INFO,
+        )
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
+    assert entry.data[CONF_DEVICE] == "/dev/serial/by-id/usb-Lunatone_USB-DALI2"
