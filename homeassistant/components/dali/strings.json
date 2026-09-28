@@ -1,13 +1,24 @@
 {
   "config": {
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "no_serial_ports": "No serial ports were found. Connect the Lunatone USB-DALI2 interface, then try again."
     },
     "error": {
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]"
     },
     "step": {
       "usb_confirm": {
+        "title": "USB-DALI2 interface"
+      },
+      "user": {
+        "data": {
+          "device": "Serial port"
+        },
+        "data_description": {
+          "device": "The serial port that the Lunatone USB-DALI2 interface is connected to."
+        },
+        "description": "Select the serial port that the Lunatone USB-DALI2 interface is connected to.",
         "title": "USB-DALI2 interface"
       }
     }
