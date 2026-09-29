@@ -2,6 +2,8 @@
 
 DOMAIN = "dali"
 
+CONF_BUS_POWER = "bus_power"
+
 ISSUE_UNADDRESSED_GEAR = "unaddressed_gear"
 
 

@@ -8,6 +8,16 @@
       "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]"
     },
     "step": {
+      "bus_power": {
+        "data": {
+          "bus_power": "Provide DALI bus power"
+        },
+        "data_description": {
+          "bus_power": "The interface can power the DALI bus itself. Enable this only when no separate DALI power supply is connected, otherwise leave it off to avoid two power supplies on the bus."
+        },
+        "description": "No DALI bus power was detected. Switch on the interface's integrated power supply to power the bus?",
+        "title": "DALI bus power"
+      },
       "usb_confirm": {
         "title": "USB-DALI2 interface"
       },

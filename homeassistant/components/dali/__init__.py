@@ -9,7 +9,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import AnyDeviceEntry
 
-from .const import DOMAIN, unaddressed_gear_issue_id
+from .const import CONF_BUS_POWER, DOMAIN, unaddressed_gear_issue_id
 from .coordinator import DaliCoordinator
 
 PLATFORMS: list[Platform] = [
@@ -25,7 +25,10 @@ type DaliConfigEntry = ConfigEntry[DaliCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool:
     """Set up Tridonic DALI from a config entry."""
-    driver = DriverLubaRs232(uri=f"luba232:{entry.data[CONF_DEVICE]}")
+    driver = DriverLubaRs232(
+        uri=f"luba232:{entry.data[CONF_DEVICE]}",
+        bus_power=entry.data.get(CONF_BUS_POWER, False),
+    )
     try:
         await driver.connect(scan_dev_inst=True)
     except (OSError, TimeoutError) as err:
