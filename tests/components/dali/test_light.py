@@ -9,7 +9,7 @@ import pytest
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import DaliCoordinator, DaliGearData
 from homeassistant.components.dali.light import DaliLight, _set_xy_color
-from homeassistant.components.light import ColorMode
+from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN, ColorMode
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -100,7 +100,11 @@ async def test_light_setup_adds_new_entities(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
 
-    entity_entries = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    entity_entries = [
+        entity
+        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+        if entity.domain == LIGHT_DOMAIN
+    ]
     assert len(entity_entries) == 2
     assert {
         entity.unique_id.rsplit("_", maxsplit=1)[-1] for entity in entity_entries
