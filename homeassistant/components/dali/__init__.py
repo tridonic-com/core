@@ -1,6 +1,7 @@
 """The Tridonic DALI integration."""
 
 from dali.driver.serial import DriverLubaRs232
+from dali.exceptions import TransmissionError
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DEVICE, Platform
@@ -9,7 +10,13 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import AnyDeviceEntry
 
-from .const import CONF_BUS_POWER, DOMAIN, unaddressed_gear_issue_id
+from .const import (
+    CONF_BUS_POWER,
+    DOMAIN,
+    ISSUE_BUS_VOLTAGE_ERROR,
+    bus_voltage_error_issue_id,
+    unaddressed_gear_issue_id,
+)
 from .coordinator import DaliCoordinator
 
 PLATFORMS: list[Platform] = [
@@ -22,6 +29,9 @@ PLATFORMS: list[Platform] = [
 
 type DaliConfigEntry = ConfigEntry[DaliCoordinator]
 
+# LUBA "ADD DALI FRAME TO TX BUFFER" reason code for an unpowered bus.
+_BUS_VOLTAGE_ERROR_CODE = DriverLubaRs232.LubaTxError.BUS_VOLTAGE_ERROR.value
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool:
     """Set up Tridonic DALI from a config entry."""
@@ -31,6 +41,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool
     )
     try:
         await driver.connect(scan_dev_inst=True)
+    except TransmissionError as err:
+        if transport := getattr(driver, "_transport", None):
+            transport.close()
+        _handle_bus_voltage_error(hass, entry, err)
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect",
+        ) from err
     except (OSError, TimeoutError) as err:
         if transport := getattr(driver, "_transport", None):
             transport.close()
@@ -38,6 +56,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool
             translation_domain=DOMAIN,
             translation_key="cannot_connect",
         ) from err
+    ir.async_delete_issue(hass, DOMAIN, bus_voltage_error_issue_id(entry.entry_id))
     coordinator = DaliCoordinator(hass, driver, entry)
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -52,6 +71,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool
     return True
 
 
+def _handle_bus_voltage_error(
+    hass: HomeAssistant, entry: DaliConfigEntry, err: TransmissionError
+) -> None:
+    """Offer a repair to power the bus when the interface can supply it.
+
+    The bus is unpowered only when the interface reports a bus-voltage error
+    and its integrated supply is not already switched on for this entry.
+    """
+    if err.error_code != _BUS_VOLTAGE_ERROR_CODE or entry.data.get(
+        CONF_BUS_POWER, False
+    ):
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        bus_voltage_error_issue_id(entry.entry_id),
+        data={"entry_id": entry.entry_id},
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_BUS_VOLTAGE_ERROR,
+        translation_placeholders={"title": entry.title},
+    )
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool:
     """Unload a config entry."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
@@ -63,6 +106,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> boo
 async def async_remove_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
     """Remove repair issues belonging to a removed config entry."""
     ir.async_delete_issue(hass, DOMAIN, unaddressed_gear_issue_id(entry.entry_id))
+    ir.async_delete_issue(hass, DOMAIN, bus_voltage_error_issue_id(entry.entry_id))
 
 
 async def async_remove_config_entry_device(

@@ -3,13 +3,18 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from dali.exceptions import DALISequenceError
+from dali.exceptions import DALISequenceError, TransmissionError
 import pytest
 
 from homeassistant.components.dali import async_remove_config_entry_device
-from homeassistant.components.dali.const import DOMAIN
+from homeassistant.components.dali.const import (
+    CONF_BUS_POWER,
+    DOMAIN,
+    bus_voltage_error_issue_id,
+)
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 
 from .conftest import FakeDaliDriver
 
@@ -89,6 +94,91 @@ async def test_setup_entry_connection_failure(
         assert not await hass.config_entries.async_setup(entry.entry_id)
 
     assert fake_dali_driver.closed
+
+
+async def test_setup_bus_voltage_error_creates_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test an unpowered bus raises a repair to switch on the interface supply."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: False}
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "connect", side_effect=TransmissionError(1)),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert fake_dali_driver.closed
+    assert issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_setup_bus_voltage_error_with_bus_power_no_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test no repair is offered when the interface already powers the bus."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: True}
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "connect", side_effect=TransmissionError(1)),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_setup_clears_stale_bus_voltage_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a successful setup removes a lingering bus-voltage repair."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: False}
+    )
+    entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        bus_voltage_error_issue_id(entry.entry_id),
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="bus_voltage_error",
+        translation_placeholders={"title": "USB-DALI2"},
+    )
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+    entry.runtime_data.close()
 
 
 async def test_setup_entry_refresh_failure(

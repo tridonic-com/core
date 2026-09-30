@@ -48,26 +48,20 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         self._ports: dict[str, SerialDevice] = {}
 
     async def _async_probe(self, device: str) -> bool:
-        """Connect to the interface and report whether to offer bus power.
+        """Connect to the interface and report whether it can power the bus.
 
-        Returns True when the interface has a switchable bus power supply and
-        the bus is currently unpowered. Raises OSError or TimeoutError when the
-        interface cannot be reached.
+        Returns True when the interface has a switchable bus power supply, so
+        the user can be asked whether to enable it. Raises OSError or
+        TimeoutError when the interface cannot be reached.
         """
         driver = DriverLubaRs232(uri=f"luba232:{device}")
         try:
             await driver.connect()
             descriptor = await driver.query_device_descriptor()
-            status = await driver.read_status()
         finally:
             if transport := getattr(driver, "_transport", None):
                 transport.close()
-        return bool(
-            descriptor
-            and status
-            and descriptor.has_bus_power_supply
-            and status.bus_voltage_error
-        )
+        return bool(descriptor and descriptor.has_bus_power_supply)
 
     @override
     async def async_step_user(
