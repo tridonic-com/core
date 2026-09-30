@@ -35,12 +35,12 @@ async def test_light_commands_clamp_dali_mask(
     }
     light = DaliLight(coordinator, entry.entry_id, entry.title, 0)
 
-    with patch.object(coordinator, "async_request_refresh", new_callable=AsyncMock):
+    with patch.object(coordinator, "async_update_gear", new_callable=AsyncMock):
         await light.async_turn_on(brightness=255)
     assert isinstance(fake_dali_driver.sent[-1], DAPC)
     assert fake_dali_driver.sent[-1].power == 254
 
-    with patch.object(coordinator, "async_request_refresh", new_callable=AsyncMock):
+    with patch.object(coordinator, "async_update_gear", new_callable=AsyncMock):
         await light.async_turn_off()
     assert isinstance(fake_dali_driver.sent[-1], DAPC)
     assert fake_dali_driver.sent[-1].power == 0
@@ -123,6 +123,7 @@ async def test_dt8_light_properties_and_color_commands(
             device_types=(8,),
             supports_color_temperature=True,
             supports_xy=True,
+            color_type_tc_active=False,
             color_temp_mired=250,
             color_temp_min_mired=153,
             color_temp_max_mired=500,
@@ -138,7 +139,7 @@ async def test_dt8_light_properties_and_color_commands(
     assert light._attr_max_color_temp_kelvin == 6535
 
     with (
-        patch.object(coordinator, "async_request_refresh", new_callable=AsyncMock),
+        patch.object(coordinator, "async_update_gear", new_callable=AsyncMock),
         patch.object(
             fake_dali_driver, "run_sequence", new_callable=AsyncMock
         ) as run_sequence,
@@ -146,6 +147,31 @@ async def test_dt8_light_properties_and_color_commands(
         await light.async_turn_on(color_temp_kelvin=4000, xy_color=(0.1, 0.2))
 
     assert run_sequence.await_count == 2
+
+
+async def test_color_temperature_change_preserves_brightness(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test setting only color temperature does not drive the arc level."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=128,
+            device_types=(8,),
+            supports_color_temperature=True,
+            color_temp_mired=250,
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    with (
+        patch.object(coordinator, "async_update_gear", new_callable=AsyncMock),
+        patch.object(fake_dali_driver, "run_sequence", new_callable=AsyncMock),
+    ):
+        await light.async_turn_on(color_temp_kelvin=4000)
+
+    assert not any(isinstance(command, DAPC) for command in fake_dali_driver.sent)
 
 
 async def test_color_temperature_only_mode(
@@ -160,6 +186,48 @@ async def test_color_temperature_only_mode(
             device_types=(8,),
             supports_color_temperature=True,
             color_temp_mired=250,
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert light.color_mode is ColorMode.COLOR_TEMP
+
+
+async def test_color_temperature_mode_without_readback(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a color-temperature gear reports COLOR_TEMP even without a value."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=128,
+            device_types=(8,),
+            supports_color_temperature=True,
+            color_temp_mired=None,
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert light.color_mode is ColorMode.COLOR_TEMP
+    assert light.color_temp_kelvin is None
+
+
+async def test_dual_mode_reports_active_color_temperature(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a dual-mode gear reports COLOR_TEMP when Tc is the active type."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=255,
+            device_types=(8,),
+            supports_color_temperature=True,
+            supports_xy=True,
+            color_type_tc_active=True,
+            color_temp_mired=250,
+            xy_color=(0.5, 0.25),
         )
     }
     light = DaliLight(coordinator, entry.entry_id, entry.title, 2)

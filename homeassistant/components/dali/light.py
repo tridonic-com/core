@@ -104,11 +104,16 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
     @override
     def color_mode(self) -> ColorMode:
         """Return the currently reported color mode."""
-        gear_data = self.coordinator.data[self._address]
-        if gear_data.supports_xy and gear_data.xy_color is not None:
-            return ColorMode.XY
-        if gear_data.supports_color_temperature and gear_data.color_temp_mired:
+        modes = self._attr_supported_color_modes
+        if ColorMode.XY in modes and ColorMode.COLOR_TEMP in modes:
+            gear_data = self.coordinator.data[self._address]
+            if gear_data.color_type_tc_active is False:
+                return ColorMode.XY
             return ColorMode.COLOR_TEMP
+        if ColorMode.COLOR_TEMP in modes:
+            return ColorMode.COLOR_TEMP
+        if ColorMode.XY in modes:
+            return ColorMode.XY
         return ColorMode.BRIGHTNESS
 
     @property
@@ -128,7 +133,6 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on."""
         try:
-            brightness = max(1, min(kwargs.get("brightness", 255), 255))
             gear_data = self.coordinator.data[self._address]
             if color_temp := kwargs.get("color_temp_kelvin"):
                 await self.coordinator.driver.run_sequence(
@@ -138,24 +142,28 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                 await self.coordinator.driver.run_sequence(
                     _set_xy_color(self._address, xy_color)
                 )
-            if gear_data.linear_dimming:
-                level = round(
-                    gear_data.min_level
-                    + (brightness - 1) * (254 - gear_data.min_level) / 254
+            # Only drive the arc level when asked to, or to switch the light on;
+            # a colour-only change must not disturb the current brightness.
+            if "brightness" in kwargs or not gear_data.level:
+                brightness = max(1, min(kwargs.get("brightness", 255), 255))
+                if gear_data.linear_dimming:
+                    level = round(
+                        gear_data.min_level
+                        + (brightness - 1) * (254 - gear_data.min_level) / 254
+                    )
+                else:
+                    level = round(
+                        254 + 253 * math.log10(brightness / 255) / 3
+                        if brightness < 255
+                        else 254
+                    )
+                await self.coordinator.driver.send(
+                    DAPC(
+                        GearShort(self._address),
+                        max(gear_data.min_level, min(level, 254)),
+                    )
                 )
-            else:
-                level = round(
-                    254 + 253 * math.log10(brightness / 255) / 3
-                    if brightness < 255
-                    else 254
-                )
-            await self.coordinator.driver.send(
-                DAPC(
-                    GearShort(self._address),
-                    max(gear_data.min_level, min(level, 254)),
-                )
-            )
-            await self.coordinator.async_request_refresh()
+            await self.coordinator.async_update_gear(self._address)
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
@@ -167,7 +175,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         """Turn the light off."""
         try:
             await self.coordinator.driver.send(DAPC(GearShort(self._address), 0))
-            await self.coordinator.async_request_refresh()
+            await self.coordinator.async_update_gear(self._address)
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

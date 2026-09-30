@@ -13,7 +13,11 @@ from dali.device.general_sensor import (
     QueryMeasurementVariable,
     UnitOfMeasurement,
 )
-from dali.gear.colour import QueryColourTypeFeatures, QueryColourValueDTR
+from dali.gear.colour import (
+    QueryColourStatus,
+    QueryColourTypeFeatures,
+    QueryColourValueDTR,
+)
 from dali.gear.general import (
     DTR0,
     QueryActualLevel,
@@ -50,6 +54,7 @@ class FakeDaliDriver:
         self.min_levels = {0: 86, 2: 1}
         self.linear_dimming = {0: True}
         self.color_features = {2: (True, True)}
+        self.color_tc_active = {2: True}
         self.color_values = {
             QueryColourValueDTR.ColourTemperatureTC: 250,
             QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest: 153,
@@ -103,15 +108,6 @@ class FakeDaliDriver:
             return SimpleNamespace(value=self.levels[address])
         if isinstance(command, QueryMinLevel):
             return SimpleNamespace(value=self.min_levels.get(address, 1))
-        if isinstance(command, QueryDimmingCurve):
-            value = 1 if self.linear_dimming.get(address, False) else 0
-            return SimpleNamespace(value=SimpleNamespace(as_integer=value))
-        if isinstance(command, QueryColourTypeFeatures):
-            tc_capable, xy_capable = self.color_features.get(address, (False, False))
-            return SimpleNamespace(
-                Tc_capable=tc_capable,
-                xy_capable=xy_capable,
-            )
         return SimpleNamespace(value=None)
 
     async def run_sequence(self, sequence, progress=None):
@@ -124,6 +120,31 @@ class FakeDaliDriver:
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
+        if isinstance(first_command, QueryColourTypeFeatures):
+            features = self.color_features.get(first_command.destination.address)
+            if features is None:
+                return SimpleNamespace(raw_value=None)
+            tc_capable, xy_capable = features
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(error=False),
+                Tc_capable=tc_capable,
+                xy_capable=xy_capable,
+            )
+        if isinstance(first_command, QueryDimmingCurve):
+            value = (
+                1
+                if self.linear_dimming.get(first_command.destination.address, False)
+                else 0
+            )
+            return SimpleNamespace(raw_value=SimpleNamespace(as_integer=value))
+        if isinstance(first_command, QueryColourStatus):
+            tc_active = self.color_tc_active.get(
+                first_command.destination.address, False
+            )
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(error=False),
+                colour_type_colour_temperature_Tc_active=1 if tc_active else 0,
+            )
         if isinstance(first_command, QueryActualLevel):
             dtr_command = next(sequence)
             assert isinstance(dtr_command, DTR0)

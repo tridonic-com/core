@@ -1,10 +1,12 @@
 """Test the Tridonic DALI coordinator."""
 
+from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.address import DeviceShort, GearShort
 from dali.exceptions import DALISequenceError
+from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import QueryControlGearPresent
 from dali.sequences import progress
 import pytest
@@ -63,7 +65,7 @@ async def test_metadata_failure_is_ignored(
         fake_dali_driver,
         "run_sequence",
         new_callable=AsyncMock,
-        side_effect=[[6], DALISequenceError()],
+        side_effect=[[6], None, DALISequenceError()],
     ):
         gear = await coordinator._query_gear(0)
 
@@ -107,6 +109,44 @@ async def test_dt8_color_capabilities(
     assert gear.color_temp_min_mired == 153
     assert gear.color_temp_max_mired == 500
     assert gear.xy_color == pytest.approx((0.5, 0.25), abs=1e-5)
+
+
+async def test_configured_tc_limits_take_precedence(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the configured Tc limits are preferred over the physical ones."""
+    fake_dali_driver.color_values[QueryColourValueDTR.ColourTemperatureTcCoolest] = 200
+    fake_dali_driver.color_values[QueryColourValueDTR.ColourTemperatureTcWarmest] = 370
+
+    gear = await coordinator._query_gear(2)
+
+    assert gear is not None
+    assert gear.color_temp_min_mired == 200
+    assert gear.color_temp_max_mired == 370
+
+
+async def test_unanswered_capability_queries_use_defaults(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a gear that ignores capability queries falls back to defaults."""
+    original_run_sequence = fake_dali_driver.run_sequence
+
+    async def run_sequence(sequence: Generator, progress: object = None) -> object:
+        if sequence.__name__ == "QueryDT6DimmingCurve":
+            sequence.close()
+            return None
+        return await original_run_sequence(sequence, progress)
+
+    fake_dali_driver.color_features = {2: None}
+    with patch.object(fake_dali_driver, "run_sequence", side_effect=run_sequence):
+        gear_dt6 = await coordinator._query_gear(0)
+        gear_dt8 = await coordinator._query_gear(2)
+
+    assert gear_dt6 is not None
+    assert gear_dt6.linear_dimming is False
+    assert gear_dt8 is not None
+    assert gear_dt8.supports_color_temperature is False
+    assert gear_dt8.supports_xy is False
 
 
 async def test_async_update_gear_touches_single_entry(
