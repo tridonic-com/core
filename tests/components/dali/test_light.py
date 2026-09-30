@@ -7,7 +7,12 @@ from dali.gear.general import DAPC
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
-from homeassistant.components.dali.coordinator import DaliCoordinator, DaliGearData
+from homeassistant.components.dali.coordinator import (
+    DaliCoordinator,
+    DaliGearData,
+    _brightness_to_dali_level,
+    _dali_level_to_brightness,
+)
 from homeassistant.components.dali.light import DaliLight, _set_xy_color
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN, ColorMode
 from homeassistant.const import CONF_DEVICE
@@ -249,6 +254,41 @@ async def test_color_modes_are_not_shared_between_lights(
     DaliLight(coordinator, entry.entry_id, entry.title, 2)
 
     assert dt6_light.supported_color_modes == {ColorMode.BRIGHTNESS}
+
+
+@pytest.mark.parametrize("min_level", [1, 86, 128])
+@pytest.mark.parametrize("linear_dimming", [False, True])
+def test_brightness_level_round_trip_is_stable(
+    min_level: int, linear_dimming: bool
+) -> None:
+    """Test set-then-read of a brightness settles to a fixed point.
+
+    Reading the sent level back must reproduce a brightness that maps to the
+    same level again, so the UI slider does not keep drifting after a command.
+    """
+    for brightness in range(1, 256):
+        level = _brightness_to_dali_level(brightness, linear_dimming, min_level)
+        assert min_level <= level <= 254
+        read_back = _dali_level_to_brightness(level, linear_dimming, min_level)
+        assert _brightness_to_dali_level(read_back, linear_dimming, min_level) == level
+
+
+@pytest.mark.parametrize("min_level", [1, 86, 128])
+@pytest.mark.parametrize("linear_dimming", [False, True])
+def test_brightness_to_level_snaps_to_closest_readback(
+    min_level: int, linear_dimming: bool
+) -> None:
+    """Test the chosen level reads back closer than any nearby level."""
+    for brightness in range(1, 256):
+        level = _brightness_to_dali_level(brightness, linear_dimming, min_level)
+        chosen_error = abs(
+            _dali_level_to_brightness(level, linear_dimming, min_level) - brightness
+        )
+        for other in range(max(min_level, level - 5), min(254, level + 5) + 1):
+            other_error = abs(
+                _dali_level_to_brightness(other, linear_dimming, min_level) - brightness
+            )
+            assert chosen_error <= other_error
 
 
 def test_set_xy_color_sequence() -> None:

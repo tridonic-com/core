@@ -1,7 +1,6 @@
 """Support for Tridonic DALI lights."""
 
 from collections.abc import Generator
-import math
 from typing import Any, override
 
 from dali.address import GearShort
@@ -24,7 +23,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
 from .const import DOMAIN
-from .coordinator import DaliCoordinator
+from .coordinator import DaliCoordinator, _brightness_to_dali_level
 
 PARALLEL_UPDATES = 1
 
@@ -146,22 +145,11 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
             # a colour-only change must not disturb the current brightness.
             if "brightness" in kwargs or not gear_data.level:
                 brightness = max(1, min(kwargs.get("brightness", 255), 255))
-                if gear_data.linear_dimming:
-                    level = round(
-                        gear_data.min_level
-                        + (brightness - 1) * (254 - gear_data.min_level) / 254
-                    )
-                else:
-                    level = round(
-                        254 + 253 * math.log10(brightness / 255) / 3
-                        if brightness < 255
-                        else 254
-                    )
+                level = _brightness_to_dali_level(
+                    brightness, gear_data.linear_dimming, gear_data.min_level
+                )
                 await self.coordinator.driver.send(
-                    DAPC(
-                        GearShort(self._address),
-                        max(gear_data.min_level, min(level, 254)),
-                    )
+                    DAPC(GearShort(self._address), level)
                 )
             await self.coordinator.async_update_gear(self._address)
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:

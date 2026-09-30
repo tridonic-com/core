@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+import math
 from typing import override
 
 from dali.address import DeviceShort, GearBroadcast, GearShort, InstanceNumber
@@ -520,6 +521,37 @@ def _dali_level_to_brightness(
     if linear_dimming:
         return round(1 + (level - min_level) * 254 / (254 - min_level))
     return round(255 * 10 ** (((level - 254) * 3) / 253))
+
+
+def _brightness_to_dali_level(
+    brightness: int, linear_dimming: bool, min_level: int
+) -> int:
+    """Convert Home Assistant brightness (1-255) to a DALI arc-power level.
+
+    The DALI level axis is coarser than the 1-255 brightness axis, so rounding
+    each direction independently makes a set level read back as a different
+    brightness and the UI slider jumps. The level is therefore snapped to the
+    one that ``_dali_level_to_brightness`` maps back closest to the requested
+    brightness, keeping set-then-read stable wherever a matching level exists.
+    """
+    if linear_dimming:
+        analytic = min_level + (brightness - 1) * (254 - min_level) / 254
+    elif brightness < 255:
+        analytic = 254 + 253 * math.log10(brightness / 255) / 3
+    else:
+        analytic = 254
+    base = max(min_level, min(round(analytic), 254))
+    candidates = range(max(min_level, base - 2), min(254, base + 2) + 1)
+    return min(
+        candidates,
+        key=lambda level: (
+            abs(
+                (_dali_level_to_brightness(level, linear_dimming, min_level) or 0)
+                - brightness
+            ),
+            abs(level - base),
+        ),
+    )
 
 
 def _response_value(response: object) -> int | None:
