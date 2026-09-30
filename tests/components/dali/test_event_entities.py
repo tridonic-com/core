@@ -10,18 +10,17 @@ from dali.device.pushbutton import ButtonPressed
 import pytest
 
 from homeassistant.components.dali.binary_sensor import DaliOccupancy
-from homeassistant.components.dali.button import DaliPushbutton
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
     DaliCoordinator,
     DaliGearData,
     DaliGeneralSensorData,
 )
+from homeassistant.components.dali.event import DaliPushbuttonEvent
 from homeassistant.components.dali.sensor import DaliIlluminance, DaliPart306Sensor
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import CONF_DEVICE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 
 from .conftest import FakeDaliDriver
 
@@ -69,17 +68,17 @@ async def test_illuminance_event(
 async def test_pushbutton_event(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test pushbutton events update button attributes."""
+    """Test pushbutton events trigger the event entity."""
     coordinator = _coordinator(hass, fake_dali_driver)
-    entity = DaliPushbutton(coordinator, "entry", "USB-DALI2", 1, 2)
+    entity = DaliPushbuttonEvent(coordinator, "entry", "USB-DALI2", 1, 2)
     event = ButtonPressed(short_address=DeviceShort(1), instance_number=2)
     coordinator.event_data[(1, 2)] = event
-    with patch.object(entity, "async_write_ha_state"):
+    with (
+        patch.object(entity, "async_write_ha_state"),
+        patch.object(entity, "_trigger_event") as trigger_event,
+    ):
         entity._handle_event(event)
-    assert entity.extra_state_attributes == {"last_event": "ButtonPressed"}
-
-    with pytest.raises(HomeAssistantError):
-        await entity.async_press()
+    trigger_event.assert_called_once_with("button_pressed")
 
 
 async def test_part_306_temperature_event(
@@ -141,7 +140,7 @@ async def test_part_306_sensor_without_unit(
     "entity_class",
     [
         pytest.param(DaliOccupancy, id="occupancy"),
-        pytest.param(DaliPushbutton, id="pushbutton"),
+        pytest.param(DaliPushbuttonEvent, id="pushbutton"),
         pytest.param(DaliIlluminance, id="illuminance"),
     ],
 )
@@ -149,7 +148,7 @@ async def test_part_306_sensor_without_unit(
 async def test_input_entity_availability(
     hass: HomeAssistant,
     fake_dali_driver: FakeDaliDriver,
-    entity_class: type[DaliOccupancy | DaliPushbutton | DaliIlluminance],
+    entity_class: type[DaliOccupancy | DaliPushbuttonEvent | DaliIlluminance],
     last_update_success: bool,
 ) -> None:
     """Test input-device entities follow the interface availability."""

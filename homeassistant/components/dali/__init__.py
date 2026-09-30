@@ -22,6 +22,7 @@ from .coordinator import DaliCoordinator
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.EVENT,
     Platform.LIGHT,
     Platform.SENSOR,
 ]

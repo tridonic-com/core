@@ -34,9 +34,24 @@
     }
   },
   "entity": {
-    "button": {
+    "event": {
       "pushbutton": {
-        "name": "Pushbutton"
+        "name": "Push button {instance}",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "button_free": "Button free",
+              "button_pressed": "Button pressed",
+              "button_released": "Button released",
+              "button_stuck": "Button stuck",
+              "double_press": "Double press",
+              "long_press_repeat": "Long press repeat",
+              "long_press_start": "Long press start",
+              "long_press_stop": "Long press stop",
+              "short_press": "Short press"
+            }
+          }
+        }
       }
     },
     "sensor": {
@@ -72,9 +87,6 @@
     },
     "communication_error": {
       "message": "Unable to communicate with the DALI gear"
-    },
-    "pushbutton_not_pressable": {
-      "message": "DALI pushbuttons are event-driven and cannot be pressed"
     }
   },
   "issues": {
