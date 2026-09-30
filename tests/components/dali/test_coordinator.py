@@ -254,16 +254,46 @@ async def test_device_instance_metadata_and_event_listener(
         await hass.async_block_till_done()
 
 
+@pytest.mark.parametrize(
+    ("input_device", "expected_name", "expected_model"),
+    [
+        pytest.param(False, "USB-DALI2/5 (gear)", "DALI control gear", id="gear"),
+        pytest.param(True, "USB-DALI2/5 (sensor)", "DALI control device", id="sensor"),
+    ],
+)
 async def test_device_info_for_unknown_address(
     coordinator: DaliCoordinator,
+    input_device: bool,
+    expected_name: str,
+    expected_model: str,
 ) -> None:
-    """Test device info falls back to defaults without known metadata."""
+    """Test device info falls back to defaults and labels the device kind."""
     coordinator.data = {}
 
-    device_info = coordinator.device_info("entry", "USB-DALI2", 5)
+    device_info = coordinator.device_info(
+        "entry", "USB-DALI2", 5, input_device=input_device
+    )
 
-    assert device_info["model"] == "DALI control gear"
+    assert device_info["name"] == expected_name
+    assert device_info["model"] == expected_model
     assert device_info["serial_number"] is None
+
+
+async def test_device_info_uses_short_usb_label(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the device name is derived from the USB unique ID, not the title."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="17B5:0201_000000024994_Lunatone_DALI-2 USB PS",
+        title="DALI-2 USB PS - /dev/serial/by-id/usb-Lunatone_DALI-2_USB_PS - Lunatone",
+    )
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {}
+
+    device_info = coordinator.device_info(entry.entry_id, entry.title, 0)
+
+    assert device_info["name"] == "DALI-2_USB_PS_000000024994/0 (gear)"
 
 
 async def test_part_306_instance_is_discovered(

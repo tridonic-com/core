@@ -241,7 +241,7 @@ async def test_sensor_platform_creates_entities(
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    assert hass.states.get("sensor.usb_dali2_gear_1_illuminance") is not None
-    assert hass.states.get("sensor.usb_dali2_gear_1_temperature") is not None
+    assert hass.states.get("sensor.usb_dali2_1_sensor_illuminance") is not None
+    assert hass.states.get("sensor.usb_dali2_1_sensor_temperature") is not None
 
     assert await hass.config_entries.async_unload(entry.entry_id)

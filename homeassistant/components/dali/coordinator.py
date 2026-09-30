@@ -456,24 +456,55 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         if transport := getattr(self.driver, "_transport", None):
             transport.close()
 
-    def device_info(self, entry_id: str, title: str, address: int) -> DeviceInfo:
-        """Return shared device information for a DALI gear address."""
-        gear = self.data.get(address) or self._device_metadata.get(address)
-        if gear is None:
-            gear = DaliDeviceData()
+    def device_info(
+        self, entry_id: str, title: str, address: int, *, input_device: bool = False
+    ) -> DeviceInfo:
+        """Return shared device information for a DALI gear or input device.
+
+        DALI control gear (lights) and control devices (sensors, buttons) share
+        the same numeric address space but are distinct on the bus, so the name
+        distinguishes them and the model default reflects the correct kind.
+        """
+        if input_device:
+            data = self._device_metadata.get(address) or self.data.get(address)
+        else:
+            data = self.data.get(address) or self._device_metadata.get(address)
+        if data is None:
+            data = DaliDeviceData()
+        kind = "sensor" if input_device else "gear"
+        default_model = "DALI control device" if input_device else "DALI control gear"
         return DeviceInfo(
             identifiers={(DOMAIN, f"{entry_id}_{address}")},
-            name=f"{title} gear {address}",
-            model=f"GTIN {gear.gtin}" if gear.gtin is not None else "DALI control gear",
-            model_id=str(gear.gtin) if gear.gtin is not None else None,
+            name=f"{self._interface_label(title)}/{address} ({kind})",
+            model=f"GTIN {data.gtin}" if data.gtin is not None else default_model,
+            model_id=str(data.gtin) if data.gtin is not None else None,
             serial_number=(
-                str(gear.identification_number)
-                if gear.identification_number is not None
+                str(data.identification_number)
+                if data.identification_number is not None
                 else None
             ),
-            sw_version=gear.firmware_version,
-            hw_version=gear.hardware_version,
+            sw_version=data.firmware_version,
+            hw_version=data.hardware_version,
         )
+
+    def _interface_label(self, title: str) -> str:
+        """Return a short interface label from the entry's USB identity.
+
+        The config-entry title is the full human-readable serial-port string,
+        which is too long for a device name. The USB unique ID is a structured
+        ``vid:pid_serial_manufacturer_description`` field, so a compact
+        ``model_serial`` label is derived from it, falling back to the title
+        for non-USB interfaces that have no unique ID.
+        """
+        unique_id = self.config_entry.unique_id
+        if unique_id:
+            parts = unique_id.split("_", 3)
+            if len(parts) == 4:
+                _vid_pid, serial, _manufacturer, description = parts
+                if serial:
+                    model = description.replace(" ", "_")
+                    return f"{model}_{serial}" if model else serial
+        return title
 
 
 def _dali_level_to_brightness(

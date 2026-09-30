@@ -49,7 +49,9 @@ class DaliOccupancy(BinarySensorEntity):
         self._coordinator = coordinator
         self._key = (address, instance)
         self._attr_unique_id = f"{entry_id}_{address}_{instance}_occupancy"
-        self._attr_device_info = coordinator.device_info(entry_id, title, address)
+        self._attr_device_info = coordinator.device_info(
+            entry_id, title, address, input_device=True
+        )
         coordinator.async_add_event_listener(self._handle_event)
 
     @property
