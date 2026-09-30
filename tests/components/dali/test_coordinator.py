@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from dali.address import DeviceShort, GearShort
 from dali.exceptions import DALISequenceError
+from dali.gear.general import QueryControlGearPresent
 from dali.sequences import progress
 import pytest
 
@@ -106,6 +107,82 @@ async def test_dt8_color_capabilities(
     assert gear.color_temp_min_mired == 153
     assert gear.color_temp_max_mired == 500
     assert gear.xy_color == pytest.approx((0.5, 0.25), abs=1e-5)
+
+
+async def test_async_update_gear_touches_single_entry(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a targeted update refreshes one gear without a full bus scan."""
+    coordinator.data = {5: SimpleNamespace()}
+
+    await coordinator.async_update_gear(0)
+
+    assert 0 in coordinator.data
+    assert not any(
+        isinstance(command, QueryControlGearPresent)
+        and command.destination.address != 0
+        for command in fake_dali_driver.sent
+    )
+
+
+async def test_async_update_gear_drops_absent_gear(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test a targeted update removes a gear that stopped responding."""
+    coordinator.data = {5: SimpleNamespace()}
+
+    await coordinator.async_update_gear(5)
+
+    assert 5 not in coordinator.data
+
+
+async def test_known_gear_survives_transient_presence_miss(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a known gear is re-queried after a dropped presence response."""
+    coordinator.data = {0: SimpleNamespace()}
+    original_send = fake_dali_driver.send
+    attempts = 0
+
+    async def send(command: object) -> object:
+        nonlocal attempts
+        if (
+            isinstance(command, QueryControlGearPresent)
+            and command.destination.address == 0
+        ):
+            attempts += 1
+            if attempts == 1:
+                return SimpleNamespace(value=False)
+        return await original_send(command)
+
+    with patch.object(fake_dali_driver, "send", side_effect=send):
+        gear = await coordinator._query_gear(0)
+
+    assert attempts == 2
+    assert gear is not None
+
+
+async def test_absent_address_is_not_retried(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an unknown address is not re-queried, avoiding extra bus traffic."""
+    attempts = 0
+    original_send = fake_dali_driver.send
+
+    async def send(command: object) -> object:
+        nonlocal attempts
+        if (
+            isinstance(command, QueryControlGearPresent)
+            and command.destination.address == 5
+        ):
+            attempts += 1
+        return await original_send(command)
+
+    with patch.object(fake_dali_driver, "send", side_effect=send):
+        gear = await coordinator._query_gear(5)
+
+    assert attempts == 1
+    assert gear is None
 
 
 async def test_device_instance_metadata_and_event_listener(

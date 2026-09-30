@@ -37,6 +37,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import DOMAIN, ISSUE_UNADDRESSED_GEAR, unaddressed_gear_issue_id
 
 SCAN_INTERVAL = timedelta(seconds=30)
+FULL_SCAN_INTERVAL = timedelta(minutes=5)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -97,6 +98,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             update_interval=SCAN_INTERVAL,
         )
         self.driver = driver
+        self._last_full_scan: float | None = None
         self._metadata: dict[int, DaliDeviceData] = {}
         self._device_metadata: dict[int, DaliDeviceData] = {}
         self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
@@ -143,7 +145,28 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             for listener in tuple(self._event_listeners):
                 listener(event)
 
+    async def async_update_gear(self, address: int) -> None:
+        """Refresh a single gear and notify entities, without a full bus scan."""
+        gear = await self._query_gear(address)
+        data = dict(self.data or {})
+        if gear is None:
+            data.pop(address, None)
+        else:
+            data[address] = gear
+        self.async_set_updated_data(data)
+
     async def _query_gear(self, address: int) -> DaliGearData | None:
+        """Return a gear's state and metadata, or None when absent.
+
+        A known gear is queried again after a miss so a single dropped DALI
+        response does not flip a light to unavailable.
+        """
+        gear = await self._query_gear_once(address)
+        if gear is None and self.data and address in self.data:
+            gear = await self._query_gear_once(address)
+        return gear
+
+    async def _query_gear_once(self, address: int) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent."""
         gear_address = GearShort(address)
         try:
@@ -313,12 +336,27 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
 
     @override
     async def _async_update_data(self) -> dict[int, DaliGearData]:
-        """Scan all short addresses and query each responding gear."""
+        """Refresh known gear, scanning the whole bus periodically.
+
+        Every cycle re-queries the gear already known so lights track external
+        changes, but the full 64-address discovery scan (and the associated
+        device-instance and unaddressed-gear checks) only runs every
+        ``FULL_SCAN_INTERVAL`` to keep bus traffic low.
+        """
+        now = self.hass.loop.time()
+        full_scan = (
+            self._last_full_scan is None
+            or now - self._last_full_scan >= FULL_SCAN_INTERVAL.total_seconds()
+        )
+        addresses = range(64) if full_scan else tuple(self.data or ())
         data: dict[int, DaliGearData] = {}
-        for address in range(64):
+        for address in addresses:
             gear = await self._query_gear(address)
             if gear is not None:
                 data[address] = gear
+        if not full_scan:
+            return data
+        self._last_full_scan = now
         for address, _instance in self.driver.dev_inst_map.mapping:
             address_int = getattr(address, "address", address)
             if address_int not in self._device_metadata:
@@ -366,6 +404,8 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             Commissioning(readdress=False), progress=_log_commissioning_progress
         )
         unaddressed = await self._has_unaddressed_gear()
+        # Force a full bus scan so newly addressed gear is discovered at once.
+        self._last_full_scan = None
         await self.async_refresh()
         return unaddressed
 
