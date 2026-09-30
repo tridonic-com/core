@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
 import math
@@ -151,12 +151,23 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             for listener in tuple(self._event_listeners):
                 listener(event)
 
-    async def async_update_gear(self, address: int) -> None:
-        """Refresh a single gear and notify entities, without a full bus scan."""
+    async def async_update_gear(
+        self, address: int, optimistic_level: int | None = None
+    ) -> None:
+        """Refresh a single gear and notify entities, without a full bus scan.
+
+        ``optimistic_level`` overrides the queried brightness with the value a
+        just-sent level settles to. A DALI gear reaches a commanded level over
+        its configured fade time, so an immediate ``QueryActualLevel`` reads a
+        mid-fade value; the override shows the target at once and the periodic
+        scan reconciles it.
+        """
         gear = await self._query_gear(address)
         data = dict(self.data or {})
         if gear is None:
             data.pop(address, None)
+        elif optimistic_level is not None:
+            data[address] = replace(gear, level=optimistic_level)
         else:
             data[address] = gear
         self.async_set_updated_data(data)

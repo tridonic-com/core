@@ -23,7 +23,11 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
 from .const import DOMAIN
-from .coordinator import DaliCoordinator, _brightness_to_dali_level
+from .coordinator import (
+    DaliCoordinator,
+    _brightness_to_dali_level,
+    _dali_level_to_brightness,
+)
 
 PARALLEL_UPDATES = 1
 
@@ -143,6 +147,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                 )
             # Only drive the arc level when asked to, or to switch the light on;
             # a colour-only change must not disturb the current brightness.
+            optimistic_level: int | None = None
             if "brightness" in kwargs or not gear_data.level:
                 brightness = max(1, min(kwargs.get("brightness", 255), 255))
                 level = _brightness_to_dali_level(
@@ -151,7 +156,12 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                 await self.coordinator.driver.send(
                     DAPC(GearShort(self._address), level)
                 )
-            await self.coordinator.async_update_gear(self._address)
+                optimistic_level = _dali_level_to_brightness(
+                    level, gear_data.linear_dimming, gear_data.min_level
+                )
+            await self.coordinator.async_update_gear(
+                self._address, optimistic_level
+            )
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
@@ -163,7 +173,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         """Turn the light off."""
         try:
             await self.coordinator.driver.send(DAPC(GearShort(self._address), 0))
-            await self.coordinator.async_update_gear(self._address)
+            await self.coordinator.async_update_gear(self._address, 0)
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
