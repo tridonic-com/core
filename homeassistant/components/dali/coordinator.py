@@ -289,7 +289,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                     if isinstance(x, int) and isinstance(y, int):
                         xy_color = (x / 65535, y / 65535)
         except (OSError, TimeoutError) as err:
-            raise UpdateFailed("Unable to communicate with the DALI interface") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
         except DALISequenceError:
             return None
 
@@ -365,7 +368,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 )
             )
         except (OSError, TimeoutError) as err:
-            raise UpdateFailed("Unable to communicate with the DALI interface") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
 
         return DaliGeneralSensorData(
             quantity_name=quantity_name,
@@ -435,7 +441,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         try:
             response = await self.driver.send(QueryMissingShortAddress(GearBroadcast()))
         except (OSError, TimeoutError) as err:
-            raise UpdateFailed("Unable to communicate with the DALI interface") from err
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
         return bool(response.value)
 
     def _update_unaddressed_gear_issue(self, unaddressed: bool) -> None:

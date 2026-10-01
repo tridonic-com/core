@@ -87,6 +87,9 @@
     },
     "communication_error": {
       "message": "Unable to communicate with the DALI gear"
+    },
+    "update_failed": {
+      "message": "Unable to communicate with the DALI interface"
     }
   },
   "issues": {
