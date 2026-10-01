@@ -67,7 +67,7 @@
         'identification_number': 1,
         'input_signal_signed': False,
         'magnitude': 127,
-        'quantity_name': 27,
+        'quantity_name': 26,
         'resolution': 9,
         'unit_of_measurement': 9,
       }),

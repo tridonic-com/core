@@ -159,9 +159,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                 optimistic_level = _dali_level_to_brightness(
                     level, gear_data.linear_dimming, gear_data.min_level
                 )
-            await self.coordinator.async_update_gear(
-                self._address, optimistic_level
-            )
+            await self.coordinator.async_update_gear(self._address, optimistic_level)
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

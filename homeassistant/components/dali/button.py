@@ -28,6 +28,8 @@ async def async_setup_entry(
     """Set up identify button entities for control gear and control devices."""
     coordinator = entry.runtime_data
 
+    async_add_entities([DaliSearchDevices(coordinator, entry.entry_id, entry.title)])
+
     async_add_entities(
         DaliDeviceIdentify(coordinator, entry.entry_id, entry.title, address)
         for address in sorted(
@@ -104,7 +106,7 @@ class DaliDeviceIdentify(_DaliIdentify):
         """Initialize the entity."""
         super().__init__(coordinator)
         self._address = address
-        self._attr_unique_id = f"{entry_id}_{address}_device_identify"
+        self._attr_unique_id = f"{entry_id}_{address}_controldevice_identify"
         self._attr_device_info = coordinator.device_info(
             entry_id, title, address, input_device=True
         )
@@ -112,3 +114,22 @@ class DaliDeviceIdentify(_DaliIdentify):
     @override
     def _identify_command(self) -> object:
         return IdentifyControlDevice(DeviceShort(self._address))
+
+
+class DaliSearchDevices(CoordinatorEntity[DaliCoordinator], ButtonEntity):
+    """Button that rescans the DALI bus for addressed control devices."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_translation_key = "search_devices"
+
+    def __init__(self, coordinator: DaliCoordinator, entry_id: str, title: str) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry_id}_search_devices"
+        self._attr_device_info = coordinator.hub_device_info(entry_id, title)
+
+    @override
+    async def async_press(self) -> None:
+        """Enumerate control devices that were addressed since the last scan."""
+        await self.coordinator.async_discover_control_devices()

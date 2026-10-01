@@ -90,16 +90,34 @@ async def async_setup_entry(
 ) -> None:
     """Set up illuminance entities."""
     coordinator = entry.runtime_data
-    async_add_entities(
-        DaliIlluminance(coordinator, entry.entry_id, entry.title, address, instance)
-        for address, instance, instance_type in coordinator.device_instances
-        if instance_type == 4
-    )
-    async_add_entities(
-        DaliPart306Sensor(coordinator, entry.entry_id, entry.title, address, instance)
-        for address, instance, instance_type in coordinator.device_instances
-        if instance_type == 6 and (address, instance) in coordinator.input_devices
-    )
+    known: set[tuple[int, int]] = set()
+
+    @callback
+    def async_add_new_entities() -> None:
+        entities: list[SensorEntity] = []
+        for address, instance, instance_type in coordinator.device_instances:
+            key = (address, instance)
+            if key in known:
+                continue
+            if instance_type == 4:
+                entities.append(
+                    DaliIlluminance(
+                        coordinator, entry.entry_id, entry.title, address, instance
+                    )
+                )
+            elif instance_type == 6 and key in coordinator.input_devices:
+                entities.append(
+                    DaliPart306Sensor(
+                        coordinator, entry.entry_id, entry.title, address, instance
+                    )
+                )
+            else:
+                continue
+            known.add(key)
+        async_add_entities(entities)
+
+    async_add_new_entities()
+    entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
 
 
 class DaliIlluminance(SensorEntity):

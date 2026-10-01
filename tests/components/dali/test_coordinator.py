@@ -5,6 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.address import DeviceShort, GearShort
+from dali.device.general import (
+    DTR0 as DeviceDTR0,
+    EnableInstance,
+    EventScheme,
+    SetEventFilter,
+    SetEventScheme,
+)
 from dali.exceptions import DALISequenceError
 from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import QueryControlGearPresent
@@ -14,6 +21,7 @@ import pytest
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
     DaliCoordinator,
+    DaliGearData,
     _dali_level_to_brightness,
     _log_commissioning_progress,
 )
@@ -279,6 +287,18 @@ async def test_device_info_for_unknown_address(
     assert device_info["serial_number"] is None
 
 
+async def test_device_info_uses_gtin_as_model_id(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test the GTIN populates model_id only, so it is not shown twice."""
+    coordinator.data = {5: DaliGearData(gtin=1234567654321)}
+
+    device_info = coordinator.device_info("entry", "USB-DALI2", 5)
+
+    assert device_info["model"] == "DALI control gear"
+    assert device_info["model_id"] == "1234567654321"
+
+
 async def test_device_info_uses_short_usb_label(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
@@ -308,12 +328,46 @@ async def test_part_306_instance_is_discovered(
     await coordinator._async_update_data()
 
     sensor = coordinator.input_devices[(1, 2)]
-    assert sensor.quantity_name == 27
+    assert sensor.quantity_name == 26
     assert sensor.unit_of_measurement == 9
     assert sensor.resolution == 9
     assert sensor.magnitude == 127
     assert sensor.input_signal_signed is False
     assert sensor.gtin == 1234567654321
+
+
+async def test_part_306_instance_configured_for_device_instance_scheme(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a discovered Part 306 instance is switched to the Device/Instance scheme.
+
+    Instance-scheme events carry no short address, so the coordinator cannot
+    attribute a measured value to a device; the instance is reconfigured to the
+    Device/Instance scheme (and its measured-value events re-enabled) on
+    discovery.
+    """
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 6}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    await coordinator._async_update_data()
+
+    scheme_commands = [
+        command
+        for command in fake_dali_driver.sent
+        if isinstance(command, SetEventScheme)
+    ]
+    assert scheme_commands
+    assert any(isinstance(command, EnableInstance) for command in fake_dali_driver.sent)
+    assert any(isinstance(command, SetEventFilter) for command in fake_dali_driver.sent)
+    scheme_index = fake_dali_driver.sent.index(scheme_commands[0])
+    preceding_dtr0 = next(
+        command
+        for command in reversed(fake_dali_driver.sent[:scheme_index])
+        if isinstance(command, DeviceDTR0)
+    )
+    assert preceding_dtr0.param == EventScheme.device_instance
 
 
 async def test_part_306_query_failure_raises_update_failed(
@@ -340,6 +394,62 @@ async def test_missing_short_address_query_failure(
         pytest.raises(UpdateFailed),
     ):
         await coordinator._has_unaddressed_gear()
+
+
+async def test_missing_device_short_address_query_failure(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a failed device missing-short-address query becomes an update failure."""
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._has_unaddressed_control_devices()
+
+
+async def test_assign_device_short_addresses_discovers_new_sensor(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test device commissioning addresses a device and folds it into the map."""
+    fake_dali_driver.unaddressed_devices = [[(0, 6)]]
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    remaining = await coordinator.async_assign_control_device_short_addresses()
+
+    assert remaining is False
+    assert (0, 0, 6) in coordinator.device_instances
+    assert (0, 0) in coordinator.input_devices
+
+
+async def test_startup_scan_discovers_control_devices(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test control devices are enumerated on the first (startup) full scan."""
+    assert (0, 0) not in coordinator.input_devices
+    fake_dali_driver.pending_device_instances = {(0, 0): 6}
+
+    await coordinator._async_update_data()
+
+    assert (0, 0, 6) in coordinator.device_instances
+    assert (0, 0) in coordinator.input_devices
+
+
+async def test_periodic_scan_does_not_run_quiescent_discovery(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test later full scans skip autodiscover so the bus is not put quiescent."""
+    await coordinator._async_update_data()
+    # A device addressed after startup is not folded in by the periodic poll;
+    # only startup, the search button, or commissioning run autodiscover.
+    coordinator._last_full_scan = None
+    fake_dali_driver.pending_device_instances = {(7, 0): 6}
+
+    await coordinator._async_update_data()
+
+    assert (7, 0) not in fake_dali_driver.dev_inst_map.mapping
+    assert (7, 0) not in coordinator.input_devices
 
 
 @pytest.mark.parametrize(

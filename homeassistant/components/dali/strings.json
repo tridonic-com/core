@@ -34,6 +34,11 @@
     }
   },
   "entity": {
+    "button": {
+      "search_devices": {
+        "name": "Search for devices"
+      }
+    },
     "event": {
       "pushbutton": {
         "name": "Push button {instance}",
@@ -105,6 +110,27 @@
       },
       "title": "No power on the DALI bus on {title}"
     },
+    "unaddressed_controldevice": {
+      "fix_flow": {
+        "abort": {
+          "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+          "not_loaded": "[%key:component::dali::issues::unaddressed_gear::fix_flow::abort::not_loaded%]",
+          "program_failed": "[%key:component::dali::issues::unaddressed_gear::fix_flow::abort::program_failed%]",
+          "unaddressed_remaining": "[%key:component::dali::issues::unaddressed_gear::fix_flow::abort::unaddressed_remaining%]"
+        },
+        "progress": {
+          "assign": "[%key:component::dali::issues::unaddressed_gear::fix_flow::progress::assign%]"
+        },
+        "step": {
+          "confirm": {
+            "description": "Home Assistant found a DALI control device (such as a sensor or push button) on {title} that has no short address. Without a short address, these devices are not enumerated and do not appear in Home Assistant.\n\nSelect **Assign addresses** to assign free short addresses to these devices. Devices that already have a short address keep it.\n\nIf another DALI controller manages this bus, assign addresses with that controller instead to avoid conflicts.\n\nAfter the addresses are assigned, the new devices appear in Home Assistant automatically.",
+            "submit": "Assign addresses",
+            "title": "Assign DALI short addresses"
+          }
+        }
+      },
+      "title": "DALI control devices without a short address on {title}"
+    },
     "unaddressed_gear": {
       "fix_flow": {
         "abort": {
@@ -118,7 +144,8 @@
         },
         "step": {
           "confirm": {
-            "description": "Home Assistant found DALI control gear on {title} that has no short address. Without a short address, these lights cannot be controlled individually and do not appear in Home Assistant.\n\nSelect **Submit** to assign free short addresses to these devices. Devices that already have a short address keep it.\n\nIf another DALI controller manages this bus, assign addresses with that controller instead to avoid conflicts.\n\nAfter the addresses are assigned, the new lights appear in Home Assistant automatically.",
+            "description": "Home Assistant found DALI control gear on {title} that has no short address. Without a short address, these lights cannot be controlled individually and do not appear in Home Assistant.\n\nSelect **Assign addresses** to assign free short addresses to these devices. Devices that already have a short address keep it.\n\nIf another DALI controller manages this bus, assign addresses with that controller instead to avoid conflicts.\n\nAfter the addresses are assigned, the new lights appear in Home Assistant automatically.",
+            "submit": "Assign addresses",
             "title": "Assign DALI short addresses"
           }
         }

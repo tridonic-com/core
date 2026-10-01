@@ -12,7 +12,9 @@ from homeassistant.helpers.device_registry import AnyDeviceEntry
 
 from .const import (
     CONF_BUS_POWER,
+    CONTROL_DEVICE_ID_INFIX,
     DOMAIN,
+    GEAR_ID_INFIX,
     ISSUE_BUS_VOLTAGE_ERROR,
     bus_voltage_error_issue_id,
     unaddressed_gear_issue_id,
@@ -115,13 +117,21 @@ async def async_remove_config_entry_device(
 ) -> bool:
     """Allow removing a device only when its address no longer responds."""
     coordinator = entry.runtime_data
-    active_addresses = set(coordinator.data)
-    active_addresses.update(
+    gear_addresses = set(coordinator.data)
+    device_addresses = {
         address for address, _instance, _type in coordinator.device_instances
-    )
-    prefix = f"{entry.entry_id}_"
+    }
+    gear_prefix = f"{entry.entry_id}_{GEAR_ID_INFIX}_"
+    device_prefix = f"{entry.entry_id}_{CONTROL_DEVICE_ID_INFIX}_"
     for domain, identifier in device_entry.identifiers:
-        address = identifier.removeprefix(prefix)
-        if domain == DOMAIN and address.isdigit() and int(address) in active_addresses:
+        if domain != DOMAIN:
+            continue
+        if identifier.startswith(device_prefix):
+            address = identifier.removeprefix(device_prefix)
+            active = device_addresses
+        else:
+            address = identifier.removeprefix(gear_prefix)
+            active = gear_addresses
+        if address.isdigit() and int(address) in active:
             return False
     return True

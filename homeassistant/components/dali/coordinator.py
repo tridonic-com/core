@@ -8,9 +8,30 @@ import logging
 import math
 from typing import override
 
-from dali.address import DeviceShort, GearBroadcast, GearShort, InstanceNumber
-from dali.device.general import DTR0, QueryResolution
-from dali.device.general_sensor import MeasurementVariable, QueryMeasurementVariable
+from dali.address import (
+    DeviceBroadcast,
+    DeviceShort,
+    GearBroadcast,
+    GearShort,
+    InstanceNumber,
+)
+from dali.device.general import (
+    DTR0,
+    DTR1,
+    DTR2,
+    EnableInstance,
+    EventScheme,
+    QueryMissingShortAddress as QueryMissingDeviceShortAddress,
+    QueryResolution,
+    SetEventFilter,
+    SetEventScheme,
+)
+from dali.device.general_sensor import (
+    InstanceEventFilter,
+    MeasurementVariable,
+    QueryMeasurementVariable,
+)
+from dali.device.sequences import Commissioning as CommissionDevices
 from dali.driver.serial import DriverLubaRs232
 from dali.exceptions import (
     DALISequenceError,
@@ -39,7 +60,14 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, ISSUE_UNADDRESSED_GEAR, unaddressed_gear_issue_id
+from .const import (
+    DOMAIN,
+    ISSUE_UNADDRESSED_CONTROLDEVICE,
+    ISSUE_UNADDRESSED_GEAR,
+    registry_identifier,
+    unaddressed_control_device_issue_id,
+    unaddressed_gear_issue_id,
+)
 
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
@@ -105,6 +133,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         )
         self.driver = driver
         self._last_full_scan: float | None = None
+        self._discovered = False
         self._metadata: dict[int, DaliDeviceData] = {}
         self._device_metadata: dict[int, DaliDeviceData] = {}
         self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
@@ -397,14 +426,79 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         await self.driver.send(DTR0(variable))
         return await self.driver.send(QueryMeasurementVariable(address, instance))
 
+    async def _configure_general_sensor_events(
+        self, address: DeviceShort, instance: InstanceNumber
+    ) -> None:
+        """Make a Part 306 instance report measured values self-addressed.
+
+        A general-sensor instance may emit events under the "Instance" scheme,
+        whose frames carry no short address, so a measured value cannot be tied
+        to a device. Switching to the Device/Instance scheme makes every event
+        carry the short address the entities are keyed by, and the instance and
+        measured-value filter are (re-)enabled so reports are generated.
+        """
+        try:
+            await self.driver.send(EnableInstance(address, instance))
+            await self.driver.send(DTR0(EventScheme.device_instance))
+            await self.driver.send(SetEventScheme(address, instance))
+            await self.driver.send(DTR2(0))
+            await self.driver.send(DTR1(0))
+            await self.driver.send(DTR0(InstanceEventFilter.measured_value))
+            await self.driver.send(SetEventFilter(address, instance))
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+
+    async def async_discover_control_devices(self) -> None:
+        """Enumerate control devices and configure their event reporting.
+
+        Runs the quiescent autodiscover scan, then reads identification data
+        and enables measured-value reporting for any new Part 306 instance.
+        autodiscover only adds to the instance map, so this folds in a device
+        missed at connect or added since the last run. It silences input
+        devices for the duration of the scan, so it runs at startup, on demand,
+        and after commissioning rather than on the periodic bus poll.
+        """
+        try:
+            await self.driver.run_sequence(self.driver.dev_inst_map.autodiscover())
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+        except DALISequenceError:
+            LOGGER.debug("Control-device autodiscover failed; retrying later")
+            return
+        for address, _instance in self.driver.dev_inst_map.mapping:
+            address_int = getattr(address, "address", address)
+            if address_int not in self._device_metadata:
+                self._device_metadata[address_int] = await self._query_metadata(
+                    address
+                    if isinstance(address, DeviceShort)
+                    else DeviceShort(address)
+                )
+        for address, instance, instance_type in self.device_instances:
+            if instance_type == 6 and (address, instance) not in self.input_devices:
+                device_short = DeviceShort(address)
+                instance_number = InstanceNumber(instance)
+                sensor_data = await self._query_general_sensor(device_short, instance)
+                await self._configure_general_sensor_events(
+                    device_short, instance_number
+                )
+                self.input_devices[(address, instance)] = sensor_data
+        self.async_update_listeners()
+
     @override
     async def _async_update_data(self) -> dict[int, DaliGearData]:
         """Refresh known gear, scanning the whole bus periodically.
 
         Every cycle re-queries the gear already known so lights track external
-        changes, but the full 64-address discovery scan (and the associated
-        device-instance and unaddressed-gear checks) only runs every
-        ``FULL_SCAN_INTERVAL`` to keep bus traffic low.
+        changes, but the full 64-address scan and the unaddressed-device checks
+        only run every ``FULL_SCAN_INTERVAL`` to keep bus traffic low. Control
+        devices are enumerated once at startup and otherwise on demand, so the
+        periodic poll never puts the bus quiescent and silences input devices.
         """
         now = self.hass.loop.time()
         full_scan = (
@@ -420,26 +514,32 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         if not full_scan:
             return data
         self._last_full_scan = now
-        for address, _instance in self.driver.dev_inst_map.mapping:
-            address_int = getattr(address, "address", address)
-            if address_int not in self._device_metadata:
-                self._device_metadata[address_int] = await self._query_metadata(
-                    address
-                    if isinstance(address, DeviceShort)
-                    else DeviceShort(address)
-                )
-        for address, instance, instance_type in self.device_instances:
-            if instance_type == 6 and (address, instance) not in self.input_devices:
-                self.input_devices[
-                    (address, instance)
-                ] = await self._query_general_sensor(DeviceShort(address), instance)
+        if not self._discovered:
+            await self.async_discover_control_devices()
+            self._discovered = True
         self._update_unaddressed_gear_issue(await self._has_unaddressed_gear())
+        self._update_unaddressed_control_device_issue(
+            await self._has_unaddressed_control_devices()
+        )
         return data
 
     async def _has_unaddressed_gear(self) -> bool:
         """Return whether any control gear on the bus lacks a short address."""
         try:
             response = await self.driver.send(QueryMissingShortAddress(GearBroadcast()))
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+        return bool(response.value)
+
+    async def _has_unaddressed_control_devices(self) -> bool:
+        """Return whether any control device on the bus lacks a short address."""
+        try:
+            response = await self.driver.send(
+                QueryMissingDeviceShortAddress(DeviceBroadcast())
+            )
         except (OSError, TimeoutError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -464,13 +564,44 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             translation_placeholders={"title": self.config_entry.title},
         )
 
-    async def async_assign_short_addresses(self) -> bool:
+    def _update_unaddressed_control_device_issue(self, unaddressed: bool) -> None:
+        """Create or remove the repair issue for unaddressed control devices."""
+        issue_id = unaddressed_control_device_issue_id(self.config_entry.entry_id)
+        if not unaddressed:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            data={"entry_id": self.config_entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_UNADDRESSED_CONTROLDEVICE,
+            translation_placeholders={"title": self.config_entry.title},
+        )
+
+    async def async_assign_gear_short_addresses(self) -> bool:
         """Address unaddressed control gear and return whether any remain unaddressed."""
         await self.driver.run_sequence(
             Commissioning(readdress=False), progress=_log_commissioning_progress
         )
         unaddressed = await self._has_unaddressed_gear()
         # Force a full bus scan so newly addressed gear is discovered at once.
+        self._last_full_scan = None
+        await self.async_refresh()
+        return unaddressed
+
+    async def async_assign_control_device_short_addresses(self) -> bool:
+        """Address unaddressed control devices; return whether any remain unaddressed."""
+        await self.driver.run_sequence(
+            CommissionDevices(readdress=False), progress=_log_commissioning_progress
+        )
+        # Newly addressed devices only surface as entities once re-enumerated into
+        # the instance map; discovery is additive, so it folds them in.
+        await self.async_discover_control_devices()
+        unaddressed = await self._has_unaddressed_control_devices()
+        # Force a full bus scan so newly addressed devices are discovered at once.
         self._last_full_scan = None
         await self.async_refresh()
         return unaddressed
@@ -487,9 +618,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     ) -> DeviceInfo:
         """Return shared device information for a DALI gear or input device.
 
-        DALI control gear (lights) and control devices (sensors, buttons) share
-        the same numeric address space but are distinct on the bus, so the name
-        distinguishes them and the model default reflects the correct kind.
+        DALI control gear (lights) and control devices (sensors, buttons) have
+        independent short-address spaces, so a gear and a device can share a
+        numeric address while being distinct on the bus. The registry identifier
+        therefore encodes the kind to keep them separate devices.
         """
         if input_device:
             data = self._device_metadata.get(address) or self.data.get(address)
@@ -500,9 +632,14 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         kind = "sensor" if input_device else "gear"
         default_model = "DALI control device" if input_device else "DALI control gear"
         return DeviceInfo(
-            identifiers={(DOMAIN, f"{entry_id}_{address}")},
+            identifiers={
+                (
+                    DOMAIN,
+                    registry_identifier(entry_id, address, input_device=input_device),
+                )
+            },
             name=f"{self._interface_label(title)}/{address} ({kind})",
-            model=f"GTIN {data.gtin}" if data.gtin is not None else default_model,
+            model=default_model,
             model_id=str(data.gtin) if data.gtin is not None else None,
             serial_number=(
                 str(data.identification_number)
@@ -511,6 +648,15 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             ),
             sw_version=data.firmware_version,
             hw_version=data.hardware_version,
+        )
+
+    def hub_device_info(self, entry_id: str, title: str) -> DeviceInfo:
+        """Return device information for the DALI interface itself."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, entry_id)},
+            name=self._interface_label(title),
+            manufacturer="Lunatone",
+            model="USB-DALI2 interface",
         )
 
     def _interface_label(self, title: str) -> str:

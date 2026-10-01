@@ -7,7 +7,11 @@ from dali.gear.general import IdentifyDevice
 import pytest
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
-from homeassistant.components.dali.button import DaliDeviceIdentify, DaliIdentify
+from homeassistant.components.dali.button import (
+    DaliDeviceIdentify,
+    DaliIdentify,
+    DaliSearchDevices,
+)
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import DaliCoordinator, DaliGearData
 from homeassistant.const import CONF_DEVICE
@@ -101,8 +105,8 @@ async def test_device_identify_setup_adds_button_per_device(
         for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
         if entity.domain == BUTTON_DOMAIN
     }
-    assert f"{entry.entry_id}_5_device_identify" in identify_entries
-    assert f"{entry.entry_id}_6_device_identify" in identify_entries
+    assert f"{entry.entry_id}_5_controldevice_identify" in identify_entries
+    assert f"{entry.entry_id}_6_controldevice_identify" in identify_entries
 
 
 async def test_identify_setup_adds_button_per_gear(
@@ -126,6 +130,23 @@ async def test_identify_setup_adds_button_per_gear(
         if entity.domain == BUTTON_DOMAIN
     ]
     assert {entity.unique_id for entity in identify_entries} == {
+        f"{entry.entry_id}_search_devices",
         f"{entry.entry_id}_0_identify",
         f"{entry.entry_id}_2_identify",
     }
+
+
+async def test_search_devices_press_runs_discovery(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test pressing the search button enumerates newly addressed devices."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {}
+    button = DaliSearchDevices(coordinator, entry.entry_id, entry.title)
+    fake_dali_driver.pending_device_instances = {(3, 0): 6}
+
+    await button.async_press()
+
+    assert (3, 0, 6) in coordinator.device_instances
+    assert (3, 0) in coordinator.input_devices

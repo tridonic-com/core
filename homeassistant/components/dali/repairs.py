@@ -10,15 +10,22 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 
 from . import DaliConfigEntry
-from .const import CONF_BUS_POWER, ISSUE_BUS_VOLTAGE_ERROR
+from .const import (
+    CONF_BUS_POWER,
+    ISSUE_BUS_VOLTAGE_ERROR,
+    ISSUE_UNADDRESSED_CONTROLDEVICE,
+)
 
 
 class AssignShortAddressesRepairFlow(RepairsFlow):
-    """Assign short addresses to unaddressed DALI control gear."""
+    """Assign short addresses to unaddressed DALI control gear or devices."""
 
-    def __init__(self, entry: DaliConfigEntry) -> None:
+    def __init__(
+        self, entry: DaliConfigEntry, *, address_control_devices: bool
+    ) -> None:
         """Initialize the flow."""
         self._entry = entry
+        self._address_control_devices = address_control_devices
         self._task: asyncio.Task[bool] | None = None
         self._abort_reason: str | None = None
 
@@ -47,9 +54,13 @@ class AssignShortAddressesRepairFlow(RepairsFlow):
     ) -> RepairsFlowResult:
         """Run the commissioning sequence."""
         if self._task is None:
-            self._task = self.hass.async_create_task(
-                self._entry.runtime_data.async_assign_short_addresses()
+            coordinator = self._entry.runtime_data
+            assign = (
+                coordinator.async_assign_control_device_short_addresses
+                if self._address_control_devices
+                else coordinator.async_assign_gear_short_addresses
             )
+            self._task = self.hass.async_create_task(assign())
         if not self._task.done():
             return self.async_show_progress(
                 step_id="assign",
@@ -118,4 +129,7 @@ async def async_create_fix_flow(
     assert entry is not None
     if issue_id.startswith(ISSUE_BUS_VOLTAGE_ERROR):
         return EnableBusPowerRepairFlow(entry)
-    return AssignShortAddressesRepairFlow(entry)
+    address_control_devices = issue_id.startswith(ISSUE_UNADDRESSED_CONTROLDEVICE)
+    return AssignShortAddressesRepairFlow(
+        entry, address_control_devices=address_control_devices
+    )

@@ -138,7 +138,7 @@ async def test_part_306_unknown_quantity_is_generic(
     coordinator = _coordinator(hass, fake_dali_driver)
     coordinator.input_devices[(1, 3)] = DaliGeneralSensorData(
         quantity_name=1,
-        unit_of_measurement=59,
+        unit_of_measurement=53,
         resolution=9,
         magnitude=127,
         input_signal_signed=False,

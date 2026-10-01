@@ -44,11 +44,25 @@ async def async_setup_entry(
 ) -> None:
     """Set up pushbutton event entities."""
     coordinator = entry.runtime_data
-    async_add_entities(
-        DaliPushbuttonEvent(coordinator, entry.entry_id, entry.title, address, instance)
-        for address, instance, instance_type in coordinator.device_instances
-        if instance_type == 1
-    )
+    known: set[tuple[int, int]] = set()
+
+    @callback
+    def async_add_new_entities() -> None:
+        new_instances = [
+            (address, instance)
+            for address, instance, instance_type in coordinator.device_instances
+            if instance_type == 1 and (address, instance) not in known
+        ]
+        known.update(new_instances)
+        async_add_entities(
+            DaliPushbuttonEvent(
+                coordinator, entry.entry_id, entry.title, address, instance
+            )
+            for address, instance in new_instances
+        )
+
+    async_add_new_entities()
+    entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
 
 
 class DaliPushbuttonEvent(EventEntity):
