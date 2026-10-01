@@ -131,6 +131,31 @@ async def test_part_306_addressless_event_is_ignored(
     write_state.assert_not_called()
 
 
+async def test_part_306_sensor_subscribes_only_after_added(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a sensor subscribes to events only once added to Home Assistant.
+
+    Subscribing in __init__ would leave an orphaned listener on a
+    constructed-but-unadded entity whose hass is still None, crashing
+    async_write_ha_state when a matching event arrives.
+    """
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 2)] = DaliGeneralSensorData(
+        quantity_name=QuantityName.TEMPERATURE,
+        unit_of_measurement=9,
+        resolution=9,
+        magnitude=127,
+        input_signal_signed=False,
+    )
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 2)
+
+    assert coordinator._event_listeners == set()
+
+    await entity.async_added_to_hass()
+    assert entity._handle_event in coordinator._event_listeners
+
+
 async def test_part_306_unknown_quantity_is_generic(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:

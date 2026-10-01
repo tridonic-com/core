@@ -142,7 +142,13 @@ class DaliIlluminance(SensorEntity):
         self._attr_device_info = coordinator.device_info(
             entry_id, title, address, input_device=True
         )
-        coordinator.async_add_event_listener(self._handle_event)
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to DALI-2 events once the entity is registered."""
+        self.async_on_remove(
+            self._coordinator.async_add_event_listener(self._handle_event)
+        )
 
     @property
     @override
@@ -195,7 +201,13 @@ class DaliPart306Sensor(SensorEntity):
         self._attr_device_info = coordinator.device_info(
             entry_id, title, address, input_device=True
         )
-        coordinator.async_add_event_listener(self._handle_event)
+
+    @override
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to DALI-2 events once the entity is registered."""
+        self.async_on_remove(
+            self._coordinator.async_add_event_listener(self._handle_event)
+        )
 
     @property
     @override
