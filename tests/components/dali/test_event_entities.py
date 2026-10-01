@@ -105,6 +105,32 @@ async def test_part_306_temperature_event(
     assert entity.native_value == 26
 
 
+async def test_part_306_addressless_event_is_ignored(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an Instance-scheme sensor event without a short address is ignored.
+
+    An Instance-scheme event carries no short address, so it cannot be tied to
+    a device; the handler must not raise when dereferencing it.
+    """
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 2)] = DaliGeneralSensorData(
+        quantity_name=QuantityName.TEMPERATURE,
+        unit_of_measurement=9,
+        resolution=9,
+        magnitude=127,
+        input_signal_signed=False,
+    )
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 2)
+
+    event = GeneralSensorEvent(instance_number=2, data=26)
+    assert event.short_address is None
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        entity._handle_event(event)
+
+    write_state.assert_not_called()
+
+
 async def test_part_306_unknown_quantity_is_generic(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:

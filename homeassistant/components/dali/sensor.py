@@ -199,6 +199,7 @@ class DaliPart306Sensor(SensorEntity):
         """Handle a Part 306 general sensor event."""
         if (
             isinstance(event, GeneralSensorEvent)
+            and event.short_address is not None
             and (
                 event.short_address.address,
                 event.instance_number,

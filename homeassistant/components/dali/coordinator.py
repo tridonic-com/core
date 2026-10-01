@@ -149,7 +149,12 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 key = (address.address, event.instance_number)
                 self.event_data[key] = event
             for listener in tuple(self._event_listeners):
-                listener(event)
+                # A faulty listener must not kill the shared event task and
+                # silently stop delivery to every other entity.
+                try:
+                    listener(event)
+                except Exception:
+                    LOGGER.exception("Unhandled error in DALI event listener")
 
     async def async_update_gear(
         self, address: int, optimistic_level: int | None = None

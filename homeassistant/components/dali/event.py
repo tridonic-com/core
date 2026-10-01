@@ -88,6 +88,7 @@ class DaliPushbuttonEvent(EventEntity):
         """Trigger the entity on a matching pushbutton event."""
         if (
             isinstance(event, _PushbuttonEvent)
+            and event.short_address is not None
             and (
                 event.short_address.address,
                 event.instance_number,
