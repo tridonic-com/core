@@ -11,8 +11,8 @@
   "requirements": ["python-dali==0.12", "serialx==1.10.0"],
   "usb": [
     {
-      "description": "*usb-dali2*",
-      "manufacturer": "*lunatone*"
+      "pid": "0201",
+      "vid": "17B5"
     }
   ]
 }

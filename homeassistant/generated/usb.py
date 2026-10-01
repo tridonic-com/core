@@ -5,9 +5,9 @@ To update, run python3 -m script.hassfest
 
 USB = [
     {
-        "description": "*usb-dali2*",
         "domain": "dali",
-        "manufacturer": "*lunatone*",
+        "pid": "0201",
+        "vid": "17B5",
     },
     {
         "description": "*usb 300*",
