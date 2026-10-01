@@ -295,7 +295,11 @@ def _measurement_from_event(
     if data.resolution <= 9:
         measured_value = event_value >> (9 - data.resolution)
     else:
+        # Per IEC 62386-306 Annex B, the low bits lost to the 9-bit event
+        # payload are reconstructed by repeating the most significant bits.
         measured_value = event_value << (data.resolution - 9)
+        if data.resolution <= 18:
+            measured_value += event_value >> (18 - data.resolution)
     offset = (2 ** (data.resolution - 1)) - 1 if data.input_signal_signed else 0
     value = (measured_value - offset) * (10 ** (data.magnitude - 127))
     return int(value) if value == int(value) else value

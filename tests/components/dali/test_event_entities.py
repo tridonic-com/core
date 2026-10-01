@@ -256,6 +256,12 @@ async def test_input_entity_availability(
             id="high_resolution",
         ),
         pytest.param(
+            DaliGeneralSensorData(quantity_name=27, resolution=12, magnitude=127),
+            511,
+            4095,
+            id="high_resolution_repeat_term",
+        ),
+        pytest.param(
             DaliGeneralSensorData(
                 quantity_name=27,
                 resolution=6,
