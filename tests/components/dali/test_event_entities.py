@@ -19,7 +19,7 @@ from homeassistant.components.dali.coordinator import (
 from homeassistant.components.dali.event import DaliPushbuttonEvent
 from homeassistant.components.dali.sensor import DaliIlluminance, DaliPart306Sensor
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.const import CONF_DEVICE, UnitOfTemperature
+from homeassistant.const import CONF_DEVICE, UnitOfSoundPressure, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 
 from .conftest import FakeDaliDriver
@@ -103,6 +103,24 @@ async def test_part_306_temperature_event(
     assert entity.device_class is SensorDeviceClass.TEMPERATURE
     assert entity.native_unit_of_measurement == UnitOfTemperature.CELSIUS
     assert entity.native_value == 26
+
+
+async def test_part_306_sound_pressure_mapping(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a Part 306 sound-pressure sensor maps to the dB(A) device class."""
+    coordinator = _coordinator(hass, fake_dali_driver)
+    coordinator.input_devices[(1, 2)] = DaliGeneralSensorData(
+        quantity_name=QuantityName.SOUND_PRESSURE_LEVEL,
+        unit_of_measurement=55,
+        resolution=9,
+        magnitude=127,
+        input_signal_signed=False,
+    )
+    entity = DaliPart306Sensor(coordinator, "entry", "USB-DALI2", 1, 2)
+
+    assert entity.device_class is SensorDeviceClass.SOUND_PRESSURE
+    assert entity.native_unit_of_measurement == UnitOfSoundPressure.WEIGHTED_DECIBEL_A
 
 
 async def test_part_306_addressless_event_is_ignored(

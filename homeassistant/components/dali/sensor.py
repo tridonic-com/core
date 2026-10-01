@@ -16,7 +16,12 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfPressure, UnitOfRatio, UnitOfTemperature
+from homeassistant.const import (
+    UnitOfPressure,
+    UnitOfRatio,
+    UnitOfSoundPressure,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -78,6 +83,14 @@ DALI_PART306_SENSOR_TYPES: dict[int, DaliPart306SensorDescription] = {
         translation_key="air_quality_index",
         quantity_name=QuantityName.AIR_QUALITY_INDEX,
         device_class=SensorDeviceClass.AQI,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    QuantityName.SOUND_PRESSURE_LEVEL: DaliPart306SensorDescription(
+        key="sound_pressure",
+        translation_key="sound_pressure",
+        quantity_name=QuantityName.SOUND_PRESSURE_LEVEL,
+        device_class=SensorDeviceClass.SOUND_PRESSURE,
+        native_unit_of_measurement=UnitOfSoundPressure.WEIGHTED_DECIBEL_A,
         state_class=SensorStateClass.MEASUREMENT,
     ),
 }
@@ -260,6 +273,7 @@ DALI_PART306_UNITS: dict[int, str] = {
     UnitOfMeasurement.PASCAL: UnitOfPressure.PA,
     UnitOfMeasurement.PERCENT: UnitOfRatio.PERCENTAGE,
     UnitOfMeasurement.PARTS_PER_MILLION: UnitOfRatio.PARTS_PER_MILLION,
+    UnitOfMeasurement.DECIBEL_A: UnitOfSoundPressure.WEIGHTED_DECIBEL_A,
 }
 
 

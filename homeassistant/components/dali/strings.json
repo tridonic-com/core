@@ -78,6 +78,9 @@
       "relative_humidity": {
         "name": "[%key:component::sensor::entity_component::humidity::name%]"
       },
+      "sound_pressure": {
+        "name": "[%key:component::sensor::entity_component::sound_pressure::name%]"
+      },
       "temperature": {
         "name": "[%key:component::sensor::entity_component::temperature::name%]"
       },
