@@ -33,7 +33,8 @@ from dali.gear.general import (
     QueryMissingShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
-from dali.memory import info
+from dali.gear.sequences import EmergencyInformation
+from dali.memory import emergency as emergency_memory, info
 import pytest
 
 
@@ -68,7 +69,7 @@ class FakeDaliDriver:
         self.closed = False
         self.sent: list[Command] = []
         self.gears = {0: (6,), 1: (1,), 2: (8,)}
-        self.levels = {0: 128, 2: 254}
+        self.levels = {0: 128, 1: 254, 2: 254}
         self.min_levels = {0: 86, 2: 1}
         self.linear_dimming = {0: True}
         self.color_features = {2: (True, True)}
@@ -97,6 +98,46 @@ class FakeDaliDriver:
         }
         self.resolution = 9
         self._dtr0: int | None = None
+        # DT1 emergency state and recorded commands, keyed by gear address.
+        self.emergency_info: dict[int, dict[str, int | None]] = {
+            1: {
+                "emergency_mode": 0b00000010,
+                # Non-maintained (bit 0 only): the gear only lights in an
+                # emergency, so no normal-mode light entity is created for it.
+                "emergency_features": 0b00000001,
+                "emergency_failure_status": 0x00,
+                "emergency_status": 0b00001000,
+                "battery_charge": 254,
+                "emergency_level": 254,
+                "duration_test_result": 60,
+                "lamp_emergency_time": 5,
+                "lamp_total_operation_time": 100,
+                "rated_duration": 90,
+            }
+        }
+        self.emergency_memory: dict[int, dict[object, int | float]] = {
+            1: {
+                emergency_memory.ControlGearTemperature: 25,
+                emergency_memory.ControlGearMaxReferenceTemperature: 75,
+                emergency_memory.MinControlGearTemperatureTotal: 10,
+                emergency_memory.MaxControlGearTemperatureTotal: 80,
+                emergency_memory.AveragePowerDuringCharging: 5.0,
+                emergency_memory.AveragePowerDuringMaintenance: 1.0,
+                emergency_memory.BatteryRechargeTime: 120,
+                emergency_memory.FunctionTestTime: 30,
+                emergency_memory.BatteryFailureCounter: 0,
+                emergency_memory.LampEmergencyTimeTotal: 300,
+                emergency_memory.LampEmergencyTimeCurrentBattery: 60,
+                emergency_memory.BatteryConnectedTimeTotal: 400,
+                emergency_memory.EmergencyModeCounterTotal: 3,
+                emergency_memory.RestModeCounter: 1,
+                emergency_memory.StartFunctionTestCounter: 12,
+                emergency_memory.StartDurationTestCounterTotal: 4,
+                emergency_memory.FunctionTestFailedCounterTotal: 0,
+                emergency_memory.DurationTestFailedCounterTotal: 0,
+            }
+        }
+        self.emergency_commands: list[tuple[int, str]] = []
         self.unaddressed_gears: list[tuple[int, ...]] = []
         # Each pending control device is a list of (instance, instance_type) tuples.
         self.unaddressed_devices: list[list[tuple[int, int]]] = []
@@ -155,6 +196,32 @@ class FakeDaliDriver:
             # Commissioning takes bus time on real hardware.
             await asyncio.sleep(0)
             return self._commission_devices() if is_device else self._commission()
+        if sequence.__name__ == "read_all":
+            frame_locals = sequence.gi_frame.f_locals
+            bank = frame_locals.get("self")
+            addr = frame_locals.get("addr")
+            address = getattr(addr, "address", addr)
+            sequence.close()
+            if getattr(bank, "address", None) == 208:
+                return dict(self.emergency_memory.get(address, {}))
+            return self.metadata
+        if sequence.__name__ == "QueryEmergencyInformation":
+            frame_locals = sequence.gi_frame.f_locals
+            address = getattr(
+                frame_locals.get("address"), "address", frame_locals.get("address")
+            )
+            sequence.close()
+            return EmergencyInformation(**self.emergency_info[address])
+        if sequence.__name__ == "EmergencyCommand":
+            frame_locals = sequence.gi_frame.f_locals
+            address = getattr(
+                frame_locals.get("address"), "address", frame_locals.get("address")
+            )
+            command_class = frame_locals.get("command_class")
+            sequence.close()
+            self.emergency_commands.append((address, command_class.__name__))
+            self._apply_emergency_command(address, command_class.__name__)
+            return None
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
@@ -188,6 +255,24 @@ class FakeDaliDriver:
             assert isinstance(dtr_command, DTR0)
             return self.color_values.get(dtr_command.param)
         return self.metadata
+
+    def _apply_emergency_command(self, address: int, command_name: str) -> None:
+        """Mutate the fake emergency status to mirror a control command."""
+        state = self.emergency_info.get(address)
+        if state is None:
+            return
+        status = state["emergency_status"] or 0
+        if command_name == "StartFunctionTest":
+            status |= 0b00010000
+        elif command_name == "StartDurationTest":
+            status |= 0b00100000
+        elif command_name == "StopTest":
+            status &= ~0b00110000
+        elif command_name == "Inhibit":
+            status |= 0b00000001
+        elif command_name == "ReLightResetInhibit":
+            status &= ~0b00000001
+        state["emergency_status"] = status
 
     def _commission(self) -> None:
         """Assign free short addresses to unaddressed gear."""

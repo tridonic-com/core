@@ -22,9 +22,10 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
-from .const import DOMAIN
+from .const import DEVICE_TYPE_COLOUR, DEVICE_TYPE_LED, DOMAIN
 from .coordinator import (
     DaliCoordinator,
+    DaliGearData,
     _brightness_to_dali_level,
     _dali_level_to_brightness,
 )
@@ -47,10 +48,23 @@ async def async_setup_entry(
         async_add_entities(
             DaliLight(coordinator, entry.entry_id, entry.title, address)
             for address in new_addresses
+            if _is_light(coordinator.data[address])
         )
 
     async_add_new_entities()
     entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
+
+
+def _is_light(gear: DaliGearData) -> bool:
+    """Return whether a gear should be exposed as a light.
+
+    Dimmable (DT6) and colour (DT8) gear are always lights. A pure emergency
+    (DT1) gear is only a light when it is a maintained type that can be driven
+    from the mains; a non-maintained emergency gear has no normal-mode output.
+    """
+    if DEVICE_TYPE_LED in gear.device_types or DEVICE_TYPE_COLOUR in gear.device_types:
+        return True
+    return gear.emergency is not None and gear.emergency.controllable
 
 
 class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):

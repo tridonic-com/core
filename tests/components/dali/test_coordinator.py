@@ -157,6 +157,56 @@ async def test_unanswered_capability_queries_use_defaults(
     assert gear_dt8.supports_xy is False
 
 
+async def test_emergency_information_is_decoded(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test DT1 gear is queried for emergency status, measurements and MB208."""
+    gear = await coordinator._query_gear(1)
+
+    assert gear is not None
+    assert gear.emergency is not None
+    emergency = gear.emergency
+    assert emergency.mode == 0b00000010
+    assert emergency.features == 0b00000001
+    assert emergency.status == 0b00001000
+    assert emergency.failure_status == 0x00
+    assert emergency.battery_charge == 254
+    assert emergency.emergency_level == 254
+    assert emergency.duration_test_result == 60
+    assert emergency.rated_duration == 90
+    assert emergency.lamp_emergency_time == 5
+    assert emergency.lamp_total_operation_time == 100
+    assert emergency.control_gear_temperature == 25
+    assert emergency.average_power_during_charging == 5.0
+    assert emergency.start_function_test_counter == 12
+    assert emergency.controllable is False
+
+
+async def test_emergency_memory_failure_leaves_diagnostics_unset(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an MB208 read failure keeps the status data but drops diagnostics."""
+    original_run_sequence = fake_dali_driver.run_sequence
+
+    async def run_sequence(sequence: Generator, progress: object = None) -> object:
+        if (
+            sequence.__name__ == "read_all"
+            and sequence.gi_frame.f_locals.get("self").address == 208
+        ):
+            sequence.close()
+            raise DALISequenceError
+        return await original_run_sequence(sequence, progress)
+
+    with patch.object(fake_dali_driver, "run_sequence", side_effect=run_sequence):
+        gear = await coordinator._query_gear(1)
+
+    assert gear is not None
+    assert gear.emergency is not None
+    assert gear.emergency.battery_charge == 254
+    assert gear.emergency.control_gear_temperature is None
+    assert gear.emergency.start_function_test_counter is None
+
+
 async def test_async_update_gear_touches_single_entry(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
@@ -297,6 +347,59 @@ async def test_device_info_uses_gtin_as_model_id(
 
     assert device_info["model"] == "DALI control gear"
     assert device_info["model_id"] == "1234567654321"
+
+
+@pytest.mark.parametrize(
+    ("device_types", "expected_model"),
+    [
+        pytest.param(
+            (6,),
+            "DALI control gear – LED module (DT6, IEC 62386-207)",
+            id="led",
+        ),
+        pytest.param(
+            (1,),
+            "DALI control gear – Self-contained emergency lighting "
+            "(DT1, IEC 62386-202)",
+            id="emergency",
+        ),
+        pytest.param(
+            (6, 8),
+            "DALI control gear – LED module (DT6, IEC 62386-207), "
+            "Colour control (DT8, IEC 62386-209)",
+            id="led_and_colour",
+        ),
+    ],
+)
+async def test_device_info_model_exposes_gear_device_type(
+    coordinator: DaliCoordinator,
+    device_types: tuple[int, ...],
+    expected_model: str,
+) -> None:
+    """Test a gear's model names its device types and IEC 62386 parts."""
+    coordinator.data = {5: DaliGearData(device_types=device_types)}
+
+    device_info = coordinator.device_info("entry", "USB-DALI2", 5)
+
+    assert device_info["model"] == expected_model
+
+
+async def test_device_info_model_exposes_control_device_part(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a control device's model names its instance-type IEC parts."""
+    fake_dali_driver.dev_inst_map.mapping = {(5, 0): 4, (5, 1): 3}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+    coordinator.data = {}
+
+    device_info = coordinator.device_info("entry", "USB-DALI2", 5, input_device=True)
+
+    assert device_info["model"] == (
+        "DALI control device – Occupancy sensor (IEC 62386-303), "
+        "Light sensor (IEC 62386-304)"
+    )
 
 
 async def test_device_info_uses_short_usb_label(

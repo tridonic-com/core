@@ -9,11 +9,12 @@ import pytest
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
     DaliCoordinator,
+    DaliEmergencyData,
     DaliGearData,
     _brightness_to_dali_level,
     _dali_level_to_brightness,
 )
-from homeassistant.components.dali.light import DaliLight, _set_xy_color
+from homeassistant.components.dali.light import DaliLight, _is_light, _set_xy_color
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN, ColorMode
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
@@ -88,6 +89,34 @@ async def test_light_properties(
     assert light.color_mode is ColorMode.BRIGHTNESS
     assert light.color_temp_kelvin is None
     assert light.xy_color is None
+
+
+@pytest.mark.parametrize(
+    ("gear", "expected"),
+    [
+        (DaliGearData(device_types=(6,)), True),
+        (DaliGearData(device_types=(8,)), True),
+        (
+            DaliGearData(
+                device_types=(1,), emergency=DaliEmergencyData(features=0b00000010)
+            ),
+            True,
+        ),
+        (
+            DaliGearData(
+                device_types=(1,), emergency=DaliEmergencyData(features=0b00000001)
+            ),
+            False,
+        ),
+        (DaliGearData(device_types=(1,), emergency=None), False),
+    ],
+    ids=["dt6", "dt8", "dt1_maintained", "dt1_non_maintained", "dt1_no_data"],
+)
+def test_is_light_filters_non_maintained_emergency(
+    gear: DaliGearData, expected: bool
+) -> None:
+    """Test only dimmable, colour, or maintained emergency gear become lights."""
+    assert _is_light(gear) is expected
 
 
 async def test_light_setup_adds_new_entities(

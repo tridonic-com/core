@@ -24,7 +24,7 @@ from tests.common import MockConfigEntry
 async def test_setup_and_unload_entry(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test setup scans and retains only DT6 and DT8 control gear."""
+    """Test setup scans and retains DT6, DT8 and DT1 (emergency) control gear."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_DEVICE: "/dev/ttyACM0"},
@@ -43,7 +43,7 @@ async def test_setup_and_unload_entry(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
 
-    assert entry.runtime_data.data.keys() == {0, 2}
+    assert entry.runtime_data.data.keys() == {0, 1, 2}
     assert entry.runtime_data.data[0].min_level == 86
     assert forward_setups.await_count == 1
 

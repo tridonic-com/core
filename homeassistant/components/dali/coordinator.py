@@ -50,8 +50,9 @@ from dali.gear.sequences import (
     QueryDT8ColourStatus,
     QueryDT8ColourTypeFeatures,
     QueryDT8ColourValue,
+    QueryEmergencyInformation,
 )
-from dali.memory import info
+from dali.memory import emergency, info
 from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
 from homeassistant.config_entries import ConfigEntry
@@ -61,9 +62,15 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    DEVICE_INSTANCE_TYPE_NAMES,
+    DEVICE_TYPE_COLOUR,
+    DEVICE_TYPE_EMERGENCY,
+    DEVICE_TYPE_LED,
     DOMAIN,
+    GEAR_DEVICE_TYPE_NAMES,
     ISSUE_UNADDRESSED_CONTROLDEVICE,
     ISSUE_UNADDRESSED_GEAR,
+    SUPPORTED_GEAR_DEVICE_TYPES,
     registry_identifier,
     unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
@@ -85,6 +92,56 @@ class DaliDeviceData:
 
 
 @dataclass(frozen=True, slots=True)
+class DaliEmergencyData:
+    """Status and measurement data for one DT1 (IEC 62386-202) emergency gear.
+
+    The four status bytes are kept raw so entities can expose individual bits;
+    the measurement values are plain integers as reported by the gear (None
+    where the gear answers MASK or does not answer). The remaining fields are
+    the memory-bank-208 diagnostics.
+    """
+
+    mode: int | None = None
+    features: int | None = None
+    failure_status: int | None = None
+    status: int | None = None
+    battery_charge: int | None = None
+    emergency_level: int | None = None
+    duration_test_result: int | None = None
+    lamp_emergency_time: int | None = None
+    lamp_total_operation_time: int | None = None
+    rated_duration: int | None = None
+    control_gear_temperature: int | None = None
+    control_gear_max_reference_temperature: int | None = None
+    min_control_gear_temperature_total: int | None = None
+    max_control_gear_temperature_total: int | None = None
+    average_power_during_charging: float | None = None
+    average_power_during_maintenance: float | None = None
+    battery_recharge_time: int | None = None
+    function_test_time: int | None = None
+    battery_failure_counter: int | None = None
+    lamp_emergency_time_total: int | None = None
+    lamp_emergency_time_current_battery: int | None = None
+    battery_connected_time_total: int | None = None
+    emergency_mode_counter_total: int | None = None
+    rest_mode_counter: int | None = None
+    start_function_test_counter: int | None = None
+    start_duration_test_counter_total: int | None = None
+    function_test_failed_counter_total: int | None = None
+    duration_test_failed_counter_total: int | None = None
+
+    @property
+    def controllable(self) -> bool:
+        """Return whether the gear can be driven as a normal (maintained) light.
+
+        The features byte reports the gear type; a maintained or switched-
+        maintained gear keeps the lamp lit from the mains and so behaves as a
+        dimmable light, whereas a non-maintained gear only lights in emergency.
+        """
+        return self.features is not None and bool(self.features & 0b110)
+
+
+@dataclass(frozen=True, slots=True)
 class DaliGearData(DaliDeviceData):
     """State and identification data for one DALI control gear."""
 
@@ -99,6 +156,7 @@ class DaliGearData(DaliDeviceData):
     color_temp_min_mired: int | None = None
     color_temp_max_mired: int | None = None
     xy_color: tuple[float, float] | None = None
+    emergency: DaliEmergencyData | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +287,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 for device_type in await self.driver.run_sequence(
                     QueryDeviceTypes(gear_address)
                 )
-                if device_type in (6, 8)
+                if device_type in SUPPORTED_GEAR_DEVICE_TYPES
             )
             if not device_types:
                 return None
@@ -239,7 +297,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             if not isinstance(min_level, int) or not 1 <= min_level <= 254:
                 min_level = 1
             linear_dimming = False
-            if 6 in device_types:
+            if DEVICE_TYPE_LED in device_types:
                 curve = await self.driver.run_sequence(
                     QueryDT6DimmingCurve(gear_address)
                 )
@@ -255,7 +313,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             color_temp_min_mired = None
             color_temp_max_mired = None
             xy_color = None
-            if 8 in device_types:
+            if DEVICE_TYPE_COLOUR in device_types:
                 features = await self.driver.run_sequence(
                     QueryDT8ColourTypeFeatures(gear_address)
                 )
@@ -317,6 +375,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                     )
                     if isinstance(x, int) and isinstance(y, int):
                         xy_color = (x / 65535, y / 65535)
+            emergency_data = None
+            if DEVICE_TYPE_EMERGENCY in device_types:
+                emergency_data = await self._query_emergency(gear_address)
         except (OSError, TimeoutError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -342,10 +403,80 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             color_temp_min_mired=color_temp_min_mired,
             color_temp_max_mired=color_temp_max_mired,
             xy_color=xy_color,
+            emergency=emergency_data,
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,
             firmware_version=metadata.firmware_version,
             hardware_version=metadata.hardware_version,
+        )
+
+    async def _query_emergency(self, gear_address: GearShort) -> DaliEmergencyData:
+        """Read DT1 (IEC 62386-202) status, measurements and MB208 diagnostics.
+
+        The four status bytes and the measurement values come from a single
+        ``QueryEmergencyInformation`` transaction; the slower memory-bank-208
+        diagnostics are read separately and a bank a gear does not implement
+        simply leaves those fields unset.
+        """
+        info_ = await self.driver.run_sequence(QueryEmergencyInformation(gear_address))
+        try:
+            memory = await self.driver.run_sequence(
+                emergency.BANK_208.read_all(gear_address)
+            )
+        except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
+            memory = {}
+
+        return DaliEmergencyData(
+            mode=info_.emergency_mode,
+            features=info_.emergency_features,
+            failure_status=info_.emergency_failure_status,
+            status=info_.emergency_status,
+            battery_charge=info_.battery_charge,
+            emergency_level=info_.emergency_level,
+            duration_test_result=info_.duration_test_result,
+            lamp_emergency_time=info_.lamp_emergency_time,
+            lamp_total_operation_time=info_.lamp_total_operation_time,
+            rated_duration=info_.rated_duration,
+            control_gear_temperature=memory.get(emergency.ControlGearTemperature),
+            control_gear_max_reference_temperature=memory.get(
+                emergency.ControlGearMaxReferenceTemperature
+            ),
+            min_control_gear_temperature_total=memory.get(
+                emergency.MinControlGearTemperatureTotal
+            ),
+            max_control_gear_temperature_total=memory.get(
+                emergency.MaxControlGearTemperatureTotal
+            ),
+            average_power_during_charging=memory.get(
+                emergency.AveragePowerDuringCharging
+            ),
+            average_power_during_maintenance=memory.get(
+                emergency.AveragePowerDuringMaintenance
+            ),
+            battery_recharge_time=memory.get(emergency.BatteryRechargeTime),
+            function_test_time=memory.get(emergency.FunctionTestTime),
+            battery_failure_counter=memory.get(emergency.BatteryFailureCounter),
+            lamp_emergency_time_total=memory.get(emergency.LampEmergencyTimeTotal),
+            lamp_emergency_time_current_battery=memory.get(
+                emergency.LampEmergencyTimeCurrentBattery
+            ),
+            battery_connected_time_total=memory.get(
+                emergency.BatteryConnectedTimeTotal
+            ),
+            emergency_mode_counter_total=memory.get(
+                emergency.EmergencyModeCounterTotal
+            ),
+            rest_mode_counter=memory.get(emergency.RestModeCounter),
+            start_function_test_counter=memory.get(emergency.StartFunctionTestCounter),
+            start_duration_test_counter_total=memory.get(
+                emergency.StartDurationTestCounterTotal
+            ),
+            function_test_failed_counter_total=memory.get(
+                emergency.FunctionTestFailedCounterTotal
+            ),
+            duration_test_failed_counter_total=memory.get(
+                emergency.DurationTestFailedCounterTotal
+            ),
         )
 
     async def _query_metadata(self, address: GearShort | DeviceShort) -> DaliDeviceData:
@@ -630,7 +761,12 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         if data is None:
             data = DaliDeviceData()
         kind = "sensor" if input_device else "gear"
-        default_model = "DALI control device" if input_device else "DALI control gear"
+        if input_device:
+            model = self._control_device_model(address)
+        else:
+            model = _gear_model(
+                data.device_types if isinstance(data, DaliGearData) else ()
+            )
         return DeviceInfo(
             identifiers={
                 (
@@ -639,7 +775,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 )
             },
             name=f"{self._interface_label(title)}/{address} ({kind})",
-            model=default_model,
+            model=model,
             model_id=str(data.gtin) if data.gtin is not None else None,
             serial_number=(
                 str(data.identification_number)
@@ -649,6 +785,27 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             sw_version=data.firmware_version,
             hw_version=data.hardware_version,
         )
+
+    def _control_device_model(self, address: int) -> str:
+        """Return a model string naming a control device's instance-type parts.
+
+        A control device can host several instances of different types, so the
+        model lists each discovered instance type with the IEC 62386-3xx part
+        that specifies it.
+        """
+        instance_types = sorted(
+            {
+                instance_type
+                for addr, _instance, instance_type in self.device_instances
+                if addr == address
+            }
+        )
+        labels = [
+            _instance_type_label(instance_type) for instance_type in instance_types
+        ]
+        if not labels:
+            return "DALI control device"
+        return "DALI control device – " + ", ".join(labels)
 
     def hub_device_info(self, entry_id: str, title: str) -> DeviceInfo:
         """Return device information for the DALI interface itself."""
@@ -677,6 +834,28 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                     model = description.replace(" ", "_")
                     return f"{model}_{serial}" if model else serial
         return title
+
+
+def _gear_model(device_types: tuple[int, ...]) -> str:
+    """Return a model string naming a control gear's device-type parts."""
+    if not device_types:
+        return "DALI control gear"
+    labels = [_gear_type_label(device_type) for device_type in device_types]
+    return "DALI control gear – " + ", ".join(labels)
+
+
+def _gear_type_label(device_type: int) -> str:
+    """Return a label for one control-gear device type and its IEC part."""
+    name = GEAR_DEVICE_TYPE_NAMES.get(device_type, f"Device type {device_type}")
+    return f"{name} (DT{device_type}, IEC 62386-{201 + device_type})"
+
+
+def _instance_type_label(instance_type: int) -> str:
+    """Return a label for one control-device instance type and its IEC part."""
+    name = DEVICE_INSTANCE_TYPE_NAMES.get(
+        instance_type, f"Instance type {instance_type}"
+    )
+    return f"{name} (IEC 62386-{300 + instance_type})"
 
 
 def _dali_level_to_brightness(

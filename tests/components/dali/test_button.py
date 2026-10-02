@@ -8,12 +8,18 @@ import pytest
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
 from homeassistant.components.dali.button import (
+    EMERGENCY_BUTTON_TYPES,
     DaliDeviceIdentify,
+    DaliEmergencyButton,
     DaliIdentify,
     DaliSearchDevices,
 )
 from homeassistant.components.dali.const import DOMAIN
-from homeassistant.components.dali.coordinator import DaliCoordinator, DaliGearData
+from homeassistant.components.dali.coordinator import (
+    DaliCoordinator,
+    DaliEmergencyData,
+    DaliGearData,
+)
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -127,11 +133,11 @@ async def test_identify_setup_adds_button_per_gear(
     identify_entries = [
         entity
         for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-        if entity.domain == BUTTON_DOMAIN
+        if entity.domain == BUTTON_DOMAIN and entity.unique_id.endswith("_identify")
     ]
     assert {entity.unique_id for entity in identify_entries} == {
-        f"{entry.entry_id}_search_devices",
         f"{entry.entry_id}_0_identify",
+        f"{entry.entry_id}_1_identify",
         f"{entry.entry_id}_2_identify",
     }
 
@@ -150,3 +156,83 @@ async def test_search_devices_press_runs_discovery(
 
     assert (3, 0, 6) in coordinator.device_instances
     assert (3, 0) in coordinator.input_devices
+
+
+EMERGENCY_BUTTON_COMMANDS = {
+    description.key: description.command.__name__
+    for description in EMERGENCY_BUTTON_TYPES
+}
+
+
+@pytest.mark.parametrize(
+    ("key", "command_name"),
+    list(EMERGENCY_BUTTON_COMMANDS.items()),
+)
+async def test_emergency_button_press_sends_command(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    key: str,
+    command_name: str,
+) -> None:
+    """Test each emergency button issues its DT1 command via run_sequence."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        1: DaliGearData(device_types=(1,), emergency=DaliEmergencyData())
+    }
+    description = next(d for d in EMERGENCY_BUTTON_TYPES if d.key == key)
+    button = DaliEmergencyButton(
+        coordinator, entry.entry_id, entry.title, 1, description
+    )
+
+    assert button.available
+
+    await button.async_press()
+
+    assert (1, command_name) in fake_dali_driver.emergency_commands
+
+
+async def test_emergency_button_failure_raises_home_assistant_error(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test emergency command errors are surfaced as Home Assistant errors."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        1: DaliGearData(device_types=(1,), emergency=DaliEmergencyData())
+    }
+    button = DaliEmergencyButton(
+        coordinator, entry.entry_id, entry.title, 1, EMERGENCY_BUTTON_TYPES[0]
+    )
+
+    with (
+        patch.object(fake_dali_driver, "run_sequence", side_effect=OSError("offline")),
+        pytest.raises(HomeAssistantError),
+    ):
+        await button.async_press()
+
+
+async def test_emergency_setup_adds_buttons_per_emergency_gear(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test the full set of emergency buttons is created for a DT1 gear."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    unique_ids = {
+        entity.unique_id
+        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+        if entity.domain == BUTTON_DOMAIN
+    }
+    for description in EMERGENCY_BUTTON_TYPES:
+        assert f"{entry.entry_id}_1_{description.key}" in unique_ids
+    # Non-emergency gear gets no emergency command buttons.
+    assert f"{entry.entry_id}_0_start_function_test" not in unique_ids
