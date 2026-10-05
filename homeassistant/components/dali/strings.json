@@ -142,6 +142,60 @@
         }
       }
     },
+    "number": {
+      "extended_fade_time": {
+        "name": "Extended fade time"
+      },
+      "max_level": {
+        "name": "Maximum level"
+      },
+      "min_level": {
+        "name": "Minimum level"
+      }
+    },
+    "select": {
+      "fade_rate": {
+        "name": "Fade rate",
+        "state": {
+          "2_8_steps_s": "2.8 steps/s",
+          "4_0_steps_s": "4.0 steps/s",
+          "5_6_steps_s": "5.6 steps/s",
+          "7_9_steps_s": "7.9 steps/s",
+          "11_2_steps_s": "11.2 steps/s",
+          "15_8_steps_s": "15.8 steps/s",
+          "22_4_steps_s": "22.4 steps/s",
+          "31_6_steps_s": "31.6 steps/s",
+          "44_7_steps_s": "44.7 steps/s",
+          "63_3_steps_s": "63.3 steps/s",
+          "89_4_steps_s": "89.4 steps/s",
+          "126_5_steps_s": "126.5 steps/s",
+          "178_9_steps_s": "178.9 steps/s",
+          "253_0_steps_s": "253.0 steps/s",
+          "357_8_steps_s": "357.8 steps/s"
+        }
+      },
+      "fade_time": {
+        "name": "Fade time",
+        "state": {
+          "0_7_s": "0.7 seconds",
+          "1_0_s": "1.0 seconds",
+          "1_4_s": "1.4 seconds",
+          "2_0_s": "2.0 seconds",
+          "2_8_s": "2.8 seconds",
+          "4_0_s": "4.0 seconds",
+          "5_7_s": "5.7 seconds",
+          "8_0_s": "8.0 seconds",
+          "11_3_s": "11.3 seconds",
+          "16_0_s": "16.0 seconds",
+          "22_6_s": "22.6 seconds",
+          "32_0_s": "32.0 seconds",
+          "45_3_s": "45.3 seconds",
+          "64_0_s": "64.0 seconds",
+          "90_5_s": "90.5 seconds",
+          "extended": "Use extended fade time"
+        }
+      }
+    },
     "sensor": {
       "air_quality_index": {
         "name": "[%key:component::sensor::entity_component::aqi::name%]"

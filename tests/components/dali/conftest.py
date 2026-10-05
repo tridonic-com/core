@@ -29,6 +29,9 @@ from dali.gear.general import (
     QueryActualLevel,
     QueryControlGearPresent,
     QueryDeviceType,
+    QueryExtendedFadeTime,
+    QueryFadeTimeFadeRate,
+    QueryMaxLevel,
     QueryMinLevel,
     QueryMissingShortAddress,
 )
@@ -71,6 +74,15 @@ class FakeDaliDriver:
         self.gears = {0: (6,), 1: (1,), 2: (8,)}
         self.levels = {0: 128, 1: 254, 2: 254}
         self.min_levels = {0: 86, 2: 1}
+        self.max_levels: dict[int, int] = {}
+        self.physical_min_levels = {0: 86}
+        # (fade time code, fade rate code); the factory default is (0, 7), and
+        # None models a gear whose answer arrives with a framing error.
+        self.fade: dict[int, tuple[int, int] | None] = {0: (4, 7)}
+        # (base, multiplier); gear without an entry does not implement it, and
+        # None models a framing error.
+        self.extended_fade: dict[int, tuple[int, int] | None] = {0: (5, 3)}
+        self.gear_writes: list[tuple[int, str, int]] = []
         self.linear_dimming = {0: True}
         self.color_features = {2: (True, True)}
         self.color_tc_active = {2: True}
@@ -176,6 +188,28 @@ class FakeDaliDriver:
             return SimpleNamespace(value=self.levels[address])
         if isinstance(command, QueryMinLevel):
             return SimpleNamespace(value=self.min_levels.get(address, 1))
+        if isinstance(command, QueryMaxLevel):
+            return SimpleNamespace(value=self.max_levels.get(address, 254))
+        if isinstance(command, QueryFadeTimeFadeRate):
+            fade = self.fade.get(address, (0, 7))
+            if fade is None:
+                return SimpleNamespace(value="(framing error)")
+            fade_time, fade_rate = fade
+            return SimpleNamespace(value=(fade_time << 4) | fade_rate)
+        if isinstance(command, QueryExtendedFadeTime):
+            # The real command answers with a bare Response, which exposes the
+            # backward frame rather than a numeric value.
+            if address not in self.extended_fade:
+                return SimpleNamespace(raw_value=None)
+            extended = self.extended_fade[address]
+            if extended is None:
+                return SimpleNamespace(raw_value=SimpleNamespace(error=True))
+            base, multiplier = extended
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(
+                    error=False, as_integer=(multiplier << 4) | base
+                )
+            )
         return SimpleNamespace(value=None)
 
     async def run_sequence(self, sequence, progress=None):
@@ -221,6 +255,17 @@ class FakeDaliDriver:
             sequence.close()
             self.emergency_commands.append((address, command_class.__name__))
             self._apply_emergency_command(address, command_class.__name__)
+            return None
+        if sequence.__name__ == "set_dtr0_variable":
+            frame_locals = sequence.gi_frame.f_locals
+            address = getattr(
+                frame_locals.get("address"), "address", frame_locals.get("address")
+            )
+            command_class = frame_locals["command"]
+            value = frame_locals["value"]
+            sequence.close()
+            self.gear_writes.append((address, command_class.__name__, value))
+            self._apply_gear_write(address, command_class.__name__, value)
             return None
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
@@ -273,6 +318,26 @@ class FakeDaliDriver:
         elif command_name == "ReLightResetInhibit":
             status &= ~0b00000001
         state["emergency_status"] = status
+
+    def _apply_gear_write(self, address: int, command_name: str, value: int) -> None:
+        """Mirror how a gear arbitrates a written configuration variable."""
+        fade_time, fade_rate = self.fade.get(address) or (0, 7)
+        if command_name == "SetMinLevel":
+            physical_min = self.physical_min_levels.get(address, 1)
+            self.min_levels[address] = min(
+                max(value, physical_min), self.max_levels.get(address, 254)
+            )
+        elif command_name == "SetMaxLevel":
+            self.max_levels[address] = max(value, self.min_levels.get(address, 1))
+        elif command_name == "SetFadeTime":
+            self.fade[address] = (value & 0x0F, fade_rate)
+        elif command_name == "SetFadeRate":
+            self.fade[address] = (fade_time, value & 0x0F)
+        elif command_name == "SetExtendedFadeTime":
+            # A DTR0 above 0x4f selects a reserved multiplier and resets both.
+            self.extended_fade[address] = (
+                (0, 0) if value > 0x4F else (value & 0x0F, (value >> 4) & 0x07)
+            )
 
     def _commission(self) -> None:
         """Assign free short addresses to unaddressed gear."""

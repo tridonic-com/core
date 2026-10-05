@@ -42,6 +42,9 @@ from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import (
     QueryActualLevel,
     QueryControlGearPresent,
+    QueryExtendedFadeTime,
+    QueryFadeTimeFadeRate,
+    QueryMaxLevel,
     QueryMinLevel,
     QueryMissingShortAddress,
 )
@@ -155,11 +158,32 @@ class DaliEmergencyData:
 
 
 @dataclass(frozen=True, slots=True)
+class DaliGearConfig:
+    """Writable IEC 62386-102 configuration variables of one control gear.
+
+    These change only when written, so they are read on the full bus scan and
+    cached in between rather than queried on every poll.
+    """
+
+    min_level: int = 1
+    max_level: int | None = None
+    fade_time: int | None = None
+    fade_rate: int | None = None
+    extended_fade_time_base: int | None = None
+    extended_fade_time_multiplier: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DaliGearData(DaliDeviceData):
     """State and identification data for one DALI control gear."""
 
     level: int | None = None
     min_level: int = 1
+    max_level: int | None = None
+    fade_time: int | None = None
+    fade_rate: int | None = None
+    extended_fade_time_base: int | None = None
+    extended_fade_time_multiplier: int | None = None
     linear_dimming: bool = False
     device_types: tuple[int, ...] = ()
     supports_color_temperature: bool = False
@@ -208,6 +232,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._initial_refresh = True
         self._metadata: dict[int, DaliDeviceData] = {}
         self._device_metadata: dict[int, DaliDeviceData] = {}
+        self._gear_config: dict[int, DaliGearConfig] = {}
         self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
         self._configured_instances: set[tuple[int, int]] = set()
         self._store: Store[dict[str, Any]] = Store(
@@ -363,8 +388,19 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             data[address] = gear
         self.async_set_updated_data(data)
 
+    async def async_update_gear_config(self, address: int) -> None:
+        """Re-read a gear's configuration variables after a write.
+
+        The gear arbitrates what it stores — it clamps levels against its
+        physical minimum and the opposing limit, and snaps an extended fade
+        time to a representable step — so the written value is dropped from
+        the cache and read back rather than assumed.
+        """
+        self._gear_config.pop(address, None)
+        await self.async_update_gear(address)
+
     async def _query_gear(
-        self, address: int, *, fast: bool = False
+        self, address: int, *, fast: bool = False, refresh_config: bool = False
     ) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent.
 
@@ -372,14 +408,19 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         response does not flip a light to unavailable. ``fast`` skips the slow
         memory-bank reads (identification data and emergency diagnostics) so
         the initial refresh does not block setup; they are filled in later.
+        ``refresh_config`` re-reads the cached configuration variables.
         """
-        gear = await self._query_gear_once(address, fast=fast)
+        gear = await self._query_gear_once(
+            address, fast=fast, refresh_config=refresh_config
+        )
         if gear is None and self.data and address in self.data:
-            gear = await self._query_gear_once(address, fast=fast)
+            gear = await self._query_gear_once(
+                address, fast=fast, refresh_config=refresh_config
+            )
         return gear
 
     async def _query_gear_once(
-        self, address: int, *, fast: bool = False
+        self, address: int, *, fast: bool = False, refresh_config: bool = False
     ) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent."""
         gear_address = GearShort(address)
@@ -397,10 +438,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             if not device_types:
                 return None
             level = await self.driver.send(QueryActualLevel(gear_address))
-            min_level_response = await self.driver.send(QueryMinLevel(gear_address))
-            min_level = _response_value(min_level_response)
-            if not isinstance(min_level, int) or not 1 <= min_level <= 254:
-                min_level = 1
+            config = self._gear_config.get(address)
+            if config is None or refresh_config:
+                config = await self._query_gear_config(gear_address)
+                self._gear_config[address] = config
             linear_dimming = False
             if DEVICE_TYPE_LED in device_types:
                 curve = await self.driver.run_sequence(
@@ -502,9 +543,14 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
 
         return DaliGearData(
             level=_dali_level_to_brightness(
-                _response_value(level), linear_dimming, min_level
+                _response_value(level), linear_dimming, config.min_level
             ),
-            min_level=min_level,
+            min_level=config.min_level,
+            max_level=config.max_level,
+            fade_time=config.fade_time,
+            fade_rate=config.fade_rate,
+            extended_fade_time_base=config.extended_fade_time_base,
+            extended_fade_time_multiplier=config.extended_fade_time_multiplier,
             linear_dimming=linear_dimming,
             device_types=device_types,
             supports_color_temperature=supports_color_temperature,
@@ -519,6 +565,31 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             identification_number=metadata.identification_number,
             firmware_version=metadata.firmware_version,
             hardware_version=metadata.hardware_version,
+        )
+
+    async def _query_gear_config(self, gear_address: GearShort) -> DaliGearConfig:
+        """Read the IEC 62386-102 configuration variables of one control gear."""
+        min_level = _response_value(await self.driver.send(QueryMinLevel(gear_address)))
+        if min_level is None or not 1 <= min_level <= 254:
+            min_level = 1
+        max_level = _response_value(await self.driver.send(QueryMaxLevel(gear_address)))
+        if max_level is not None and not 1 <= max_level <= 254:
+            max_level = None
+        # The library's .fade_time/.fade_rate properties read their nibbles out
+        # of a framing-error frame too, so decode from the checked value.
+        fade = _response_value(
+            await self.driver.send(QueryFadeTimeFadeRate(gear_address))
+        )
+        base, multiplier = _extended_fade_time(
+            await self.driver.send(QueryExtendedFadeTime(gear_address))
+        )
+        return DaliGearConfig(
+            min_level=min_level,
+            max_level=max_level,
+            fade_time=None if fade is None else (fade >> 4) & 0x0F,
+            fade_rate=None if fade is None else fade & 0x0F,
+            extended_fade_time_base=base,
+            extended_fade_time_multiplier=multiplier,
         )
 
     async def _query_emergency(
@@ -794,6 +865,8 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         only run every ``FULL_SCAN_INTERVAL`` to keep bus traffic low. Control
         devices are enumerated once at startup and otherwise on demand, so the
         periodic poll never puts the bus quiescent and silences input devices.
+        The configuration variables are re-read on the full scan too, as they
+        only change when written, here or by another controller on the bus.
         """
         fast = self._initial_refresh
         now = self.hass.loop.time()
@@ -804,12 +877,18 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         addresses = range(64) if full_scan else tuple(self.data or ())
         data: dict[int, DaliGearData] = {}
         for address in addresses:
-            gear = await self._query_gear(address, fast=fast)
+            gear = await self._query_gear(address, fast=fast, refresh_config=full_scan)
             if gear is not None:
                 data[address] = gear
         if not full_scan:
             return data
         self._last_full_scan = now
+        # A re-addressed gear must not inherit the previous occupant's config.
+        self._gear_config = {
+            address: config
+            for address, config in self._gear_config.items()
+            if address in data
+        }
         if not self._discovered:
             await self.async_discover_control_devices(fast=fast)
             self._discovered = True
@@ -1103,6 +1182,20 @@ def _response_value(response: object) -> int | None:
     """Return a numeric response value."""
     value = getattr(response, "value", None)
     return value if isinstance(value, int) else None
+
+
+def _extended_fade_time(response: object) -> tuple[int | None, int | None]:
+    """Return the extended fade time base and multiplier of a response.
+
+    ``QueryExtendedFadeTime`` answers with a bare ``Response``, whose ``value``
+    raises on a framing error rather than reporting it, so the backward frame
+    is inspected directly.
+    """
+    raw = getattr(response, "raw_value", None)
+    if raw is None or raw.error:
+        return None, None
+    byte = raw.as_integer
+    return byte & 0x0F, (byte >> 4) & 0x07
 
 
 def _log_commissioning_progress(update: str | progress) -> None:

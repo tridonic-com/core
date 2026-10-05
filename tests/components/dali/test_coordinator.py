@@ -16,7 +16,7 @@ from dali.device.general import (
 )
 from dali.exceptions import DALISequenceError
 from dali.gear.colour import QueryColourValueDTR
-from dali.gear.general import QueryControlGearPresent
+from dali.gear.general import QueryControlGearPresent, QueryFadeTimeFadeRate
 from dali.sequences import progress
 import pytest
 
@@ -718,3 +718,99 @@ def test_commissioning_progress_logging(
         _log_commissioning_progress(update)
 
     assert ("Commissioning:" in caplog.text) is logged
+
+
+async def test_gear_config_is_decoded(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the configuration variables are decoded from their DALI encodings."""
+    gear = await coordinator._query_gear(0)
+
+    assert gear is not None
+    assert gear.min_level == 86
+    assert gear.max_level == 254
+    assert gear.fade_time == 4
+    assert gear.fade_rate == 7
+    assert gear.extended_fade_time_base == 5
+    assert gear.extended_fade_time_multiplier == 3
+
+
+async def test_framing_errors_leave_the_fade_settings_unset(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a framing error on either fade query reads as no value.
+
+    The library's convenience properties decode their nibbles out of an errored
+    frame too, so a framing error would otherwise surface as a plausible code.
+    """
+    fake_dali_driver.fade[0] = None
+    fake_dali_driver.extended_fade[0] = None
+
+    gear = await coordinator._query_gear(0)
+
+    assert gear is not None
+    assert gear.fade_time is None
+    assert gear.fade_rate is None
+    assert gear.extended_fade_time_base is None
+    assert gear.extended_fade_time_multiplier is None
+
+
+async def test_invalid_max_level_is_discarded(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an out-of-range maximum level is reported as no value."""
+    fake_dali_driver.max_levels[0] = 255
+
+    gear = await coordinator._query_gear(0)
+
+    assert gear is not None
+    assert gear.max_level is None
+
+
+async def test_gear_config_is_cached_between_full_scans(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the configuration variables are only re-read on a full scan."""
+    await coordinator._async_update_data()
+    fake_dali_driver.sent.clear()
+
+    await coordinator._async_update_data()
+
+    assert not any(
+        isinstance(command, QueryFadeTimeFadeRate) for command in fake_dali_driver.sent
+    )
+
+    coordinator._last_full_scan = None
+    await coordinator._async_update_data()
+
+    assert any(
+        isinstance(command, QueryFadeTimeFadeRate) for command in fake_dali_driver.sent
+    )
+
+
+async def test_async_update_gear_config_forces_a_re_read(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a write-triggered refresh re-reads the cached configuration."""
+    await coordinator._async_update_data()
+    fake_dali_driver.min_levels[0] = 120
+
+    await coordinator.async_update_gear(0)
+    assert coordinator.data[0].min_level == 86
+
+    await coordinator.async_update_gear_config(0)
+    assert coordinator.data[0].min_level == 120
+
+
+async def test_gear_config_cache_is_pruned_on_full_scan(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a re-addressed gear cannot inherit the previous occupant's config."""
+    await coordinator._async_update_data()
+    assert 0 in coordinator._gear_config
+
+    del fake_dali_driver.gears[0]
+    coordinator._last_full_scan = None
+    await coordinator._async_update_data()
+
+    assert 0 not in coordinator._gear_config
