@@ -230,6 +230,7 @@ class DaliOccupancy(BinarySensorEntity):
         """Handle an occupancy event."""
         if (
             isinstance(event, OccupancyEvent)
+            and event.short_address is not None
             and (
                 event.short_address.address,
                 event.instance_number,

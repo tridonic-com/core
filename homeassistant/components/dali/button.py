@@ -178,7 +178,7 @@ class _DaliIdentify(CoordinatorEntity[DaliCoordinator], ButtonEntity):
                 translation_key="communication_error",
             ) from err
 
-    def _identify_command(self) -> object:
+    def _identify_command(self) -> Command:
         """Return the identify command for the addressed device."""
         raise NotImplementedError
 
@@ -202,7 +202,7 @@ class DaliIdentify(_DaliIdentify):
         return super().available and self._address in self.coordinator.data
 
     @override
-    def _identify_command(self) -> object:
+    def _identify_command(self) -> Command:
         return IdentifyDevice(GearShort(self._address))
 
 
@@ -221,7 +221,7 @@ class DaliDeviceIdentify(_DaliIdentify):
         )
 
     @override
-    def _identify_command(self) -> object:
+    def _identify_command(self) -> Command:
         return IdentifyControlDevice(DeviceShort(self._address))
 
 

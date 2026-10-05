@@ -485,6 +485,7 @@ class DaliIlluminance(SensorEntity):
         """Handle an illuminance event."""
         if (
             isinstance(event, LightEvent)
+            and event.short_address is not None
             and (
                 event.short_address.address,
                 event.instance_number,

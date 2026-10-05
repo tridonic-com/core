@@ -157,7 +157,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                 )
             if xy_color := kwargs.get("xy_color"):
                 await self.coordinator.driver.run_sequence(
-                    _set_xy_color(self._address, xy_color)
+                    _set_xy_color(GearShort(self._address), xy_color)
                 )
             # Only drive the arc level when asked to, or to switch the light on;
             # a colour-only change must not disturb the current brightness.
