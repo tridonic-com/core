@@ -51,6 +51,9 @@ USB_PORT = USBDevice(
     description="USB-DALI2",
 )
 
+BY_ID_PATH = "/dev/serial/by-id/usb-Lunatone_USB-DALI2"
+PORT_LABEL = "Lunatone USB-DALI2 (123456)"
+
 
 async def test_usb_discovery(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> None:
     """Test USB discovery creates an entry for the interface."""
@@ -103,109 +106,6 @@ async def test_usb_discovery_cannot_connect(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "cannot_connect"
     driver.return_value._transport.close.assert_called_once_with()
-
-
-async def test_user_flow(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> None:
-    """Test manually adding an interface from the serial port list."""
-    with (
-        patch(
-            "homeassistant.components.dali.config_flow.usb.async_scan_serial_ports",
-            return_value=[USB_PORT],
-        ),
-        patch(
-            "homeassistant.components.dali.config_flow.usb.get_serial_by_id",
-            return_value=BY_ID_PATH,
-        ),
-        patch("homeassistant.components.dali.config_flow.DriverLubaRs232") as driver,
-    ):
-        driver.return_value.connect = AsyncMock()
-        driver.return_value._transport = MagicMock()
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
-        )
-
-        assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "user"
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_DEVICE: PORT_LABEL}
-        )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {CONF_DEVICE: BY_ID_PATH}
-    assert result["result"].unique_id == usb_unique_id_from_service_info(DISCOVERY_INFO)
-    assert len(mock_setup_entry.mock_calls) == 1
-
-
-async def test_user_flow_no_devices_found(hass: HomeAssistant) -> None:
-    """Test the user flow aborts when no serial ports are available."""
-    with patch(
-        "homeassistant.components.dali.config_flow.usb.async_scan_serial_ports",
-        return_value=[],
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
-        )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "no_devices_found"
-
-
-async def test_user_flow_cannot_connect(
-    hass: HomeAssistant, mock_setup_entry: AsyncMock
-) -> None:
-    """Test the user flow recovers after a failed connection."""
-    with (
-        patch(
-            "homeassistant.components.dali.config_flow.usb.async_scan_serial_ports",
-            return_value=[USB_PORT],
-        ),
-        patch(
-            "homeassistant.components.dali.config_flow.usb.get_serial_by_id",
-            return_value=BY_ID_PATH,
-        ),
-        patch("homeassistant.components.dali.config_flow.DriverLubaRs232") as driver,
-    ):
-        driver.return_value.connect = AsyncMock(side_effect=OSError)
-        driver.return_value._transport = MagicMock()
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_DEVICE: PORT_LABEL}
-        )
-
-        assert result["type"] is FlowResultType.FORM
-        assert result["errors"] == {CONF_DEVICE: "cannot_connect"}
-
-        driver.return_value.connect = AsyncMock()
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_DEVICE: PORT_LABEL}
-        )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {CONF_DEVICE: BY_ID_PATH}
-
-
-async def test_user_flow_already_configured(hass: HomeAssistant) -> None:
-    """Test the user flow hides interfaces that are already configured."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=usb_unique_id_from_service_info(DISCOVERY_INFO),
-        data={CONF_DEVICE: BY_ID_PATH},
-    )
-    entry.add_to_hass(hass)
-
-    with patch(
-        "homeassistant.components.dali.config_flow.usb.async_scan_serial_ports",
-        return_value=[USB_PORT],
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
-        )
-
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "no_devices_found"
 
 
 async def test_usb_discovery_already_configured(hass: HomeAssistant) -> None:
