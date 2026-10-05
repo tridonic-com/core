@@ -9,6 +9,7 @@ from dali.device.general import (
     DTR0 as DeviceDTR0,
     EnableInstance,
     EventScheme,
+    QueryResolution,
     SetEventFilter,
     SetEventScheme,
 )
@@ -310,6 +311,64 @@ async def test_device_instance_metadata_and_event_listener(
     finally:
         coordinator.close()
         await hass.async_block_till_done()
+
+
+async def test_general_sensor_metadata_is_decoded(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test stable metadata reads populate the sensor data."""
+    sensor = await coordinator._query_general_sensor(DeviceShort(1), 0)
+
+    assert sensor.resolution == 9
+    assert sensor.magnitude == 127
+    assert sensor.input_signal_signed is False
+
+
+async def test_general_sensor_rejects_single_corrupt_resolution(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a one-off out-of-range resolution is discarded, not latched."""
+    original_send = fake_dali_driver.send
+    responses = iter([512, 9, 9])
+
+    async def send(command: object) -> object:
+        if isinstance(command, QueryResolution):
+            return SimpleNamespace(value=next(responses))
+        return await original_send(command)
+
+    with patch.object(fake_dali_driver, "send", side_effect=send):
+        sensor = await coordinator._query_general_sensor(DeviceShort(1), 0)
+
+    assert sensor.resolution == 9
+
+
+async def test_general_sensor_unstable_resolution_raises(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test metadata that never agrees across reads fails the update."""
+    original_send = fake_dali_driver.send
+    responses = iter([9, 11, 13])
+
+    async def send(command: object) -> object:
+        if isinstance(command, QueryResolution):
+            return SimpleNamespace(value=next(responses))
+        return await original_send(command)
+
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=send),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._query_general_sensor(DeviceShort(1), 0)
+
+
+async def test_general_sensor_rejects_out_of_range_resolution(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a persistently out-of-range resolution fails the update."""
+    fake_dali_driver.resolution = 99
+
+    with pytest.raises(UpdateFailed):
+        await coordinator._query_general_sensor(DeviceShort(1), 0)
 
 
 @pytest.mark.parametrize(

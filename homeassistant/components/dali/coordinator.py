@@ -1,7 +1,7 @@
 """Data update coordinator for the Tridonic DALI integration."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
@@ -79,6 +79,12 @@ from .const import (
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
 LOGGER = logging.getLogger(__name__)
+
+# Sensor metadata is read once and cached, so a single corrupted-but-parseable
+# response skews every later measurement. Confirm each value with repeated reads.
+METADATA_QUERY_ATTEMPTS = 3
+# Widest input-value resolution IEC 62386-306 defines, in bits.
+MAX_SENSOR_RESOLUTION = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,7 +286,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         gear_address = GearShort(address)
         try:
             present = await self.driver.send(QueryControlGearPresent(gear_address))
-            if not present.value:
+            if present is None or not present.value:
                 return None
             device_types = tuple(
                 device_type
@@ -293,7 +299,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 return None
             level = await self.driver.send(QueryActualLevel(gear_address))
             min_level_response = await self.driver.send(QueryMinLevel(gear_address))
-            min_level = min_level_response.value
+            min_level = _response_value(min_level_response)
             if not isinstance(min_level, int) or not 1 <= min_level <= 254:
                 min_level = 1
             linear_dimming = False
@@ -392,7 +398,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             self._metadata[address] = metadata
 
         return DaliGearData(
-            level=_dali_level_to_brightness(level.value, linear_dimming, min_level),
+            level=_dali_level_to_brightness(
+                _response_value(level), linear_dimming, min_level
+            ),
             min_level=min_level,
             linear_dimming=linear_dimming,
             device_types=device_types,
@@ -504,26 +512,27 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             self._device_metadata[address.address] = metadata
 
         try:
-            resolution = _response_value(
-                await self.driver.send(QueryResolution(address, instance_address))
+            resolution = await self._query_stable_value(
+                lambda: self.driver.send(QueryResolution(address, instance_address)),
+                valid_range=(1, MAX_SENSOR_RESOLUTION),
             )
-            input_signal_signed = _response_value(
-                await self._query_measurement_variable(
+            input_signal_signed = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
                     address, instance_address, MeasurementVariable.INPUT_SIGNAL_SIGNED
                 )
             )
-            unit_of_measurement = _response_value(
-                await self._query_measurement_variable(
+            unit_of_measurement = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
                     address, instance_address, MeasurementVariable.UNIT_OF_MEASUREMENT
                 )
             )
-            quantity_name = _response_value(
-                await self._query_measurement_variable(
+            quantity_name = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
                     address, instance_address, MeasurementVariable.QUANTITY_NAME
                 )
             )
-            magnitude = _response_value(
-                await self._query_measurement_variable(
+            magnitude = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
                     address, instance_address, MeasurementVariable.MAGNITUDE
                 )
             )
@@ -556,6 +565,40 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         """Query a Part 306 measurement variable."""
         await self.driver.send(DTR0(variable))
         return await self.driver.send(QueryMeasurementVariable(address, instance))
+
+    async def _query_stable_value(
+        self,
+        query: Callable[[], Awaitable[object]],
+        *,
+        valid_range: tuple[int, int] | None = None,
+    ) -> int | None:
+        """Return a DALI value confirmed by two consecutive, in-range reads.
+
+        A single corrupted DALI frame can still parse as a valid number; cached
+        once as sensor metadata it silently skews every later measurement (seen
+        in practice as a temperature reading stuck roughly 290 C too high until
+        the next restart). Require two consecutive reads to agree so a one-off
+        bus error is rejected rather than latched. When ``valid_range`` is given
+        the value must also be present and within it, so an out-of-range reading
+        can never be confirmed.
+        """
+        previous: int | None = None
+        have_previous = False
+        for _ in range(METADATA_QUERY_ATTEMPTS):
+            value = _response_value(await query())
+            if valid_range is not None and (
+                value is None or not valid_range[0] <= value <= valid_range[1]
+            ):
+                have_previous = False
+                continue
+            if have_previous and value == previous:
+                return value
+            previous = value
+            have_previous = True
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="update_failed",
+        )
 
     async def _configure_general_sensor_events(
         self, address: DeviceShort, instance: InstanceNumber
@@ -663,7 +706,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
             ) from err
-        return bool(response.value)
+        return response is not None and bool(response.value)
 
     async def _has_unaddressed_control_devices(self) -> bool:
         """Return whether any control device on the bus lacks a short address."""
@@ -676,7 +719,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
             ) from err
-        return bool(response.value)
+        return response is not None and bool(response.value)
 
     def _update_unaddressed_gear_issue(self, unaddressed: bool) -> None:
         """Create or remove the repair issue for unaddressed control gear."""
