@@ -2,11 +2,11 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 import logging
 import math
-from typing import override
+from typing import Any, override
 
 from dali.address import (
     DeviceBroadcast,
@@ -56,9 +56,11 @@ from dali.memory import emergency, info
 from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -79,6 +81,11 @@ from .const import (
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
 LOGGER = logging.getLogger(__name__)
+
+# Identification metadata is static per device, so it is persisted and restored
+# across restarts to avoid re-reading whole memory banks byte by byte each time.
+STORAGE_VERSION = 1
+METADATA_SAVE_DELAY = 10
 
 # Sensor metadata is read once and cached, so a single corrupted-but-parseable
 # response skews every later measurement. Confirm each value with repeated reads.
@@ -198,12 +205,98 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self.driver = driver
         self._last_full_scan: float | None = None
         self._discovered = False
+        self._initial_refresh = True
         self._metadata: dict[int, DaliDeviceData] = {}
         self._device_metadata: dict[int, DaliDeviceData] = {}
         self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
+        self._configured_instances: set[tuple[int, int]] = set()
+        self._store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{config_entry.entry_id}_metadata"
+        )
         self._event_listeners: set[Callable[[object], None]] = set()
         self._event_task: asyncio.Task | None = None
         self.event_data: dict[tuple[int, int], object] = {}
+
+    async def async_load_metadata_cache(self) -> None:
+        """Restore identification metadata persisted from earlier sessions.
+
+        Memory-bank identification data is static per device, so reading it back
+        from storage lets the initial refresh skip the slow byte-by-byte bank
+        reads whenever a device has been seen before.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        for address, values in stored.get("gear", {}).items():
+            self._metadata[int(address)] = DaliDeviceData(**values)
+        for address, values in stored.get("device", {}).items():
+            self._device_metadata[int(address)] = DaliDeviceData(**values)
+        for key, values in stored.get("sensor", {}).items():
+            address, instance = (int(part) for part in key.split(":"))
+            self.input_devices[(address, instance)] = DaliGeneralSensorData(**values)
+
+    def _persist_metadata(self) -> None:
+        """Schedule a debounced save of the identification metadata caches."""
+        self._store.async_delay_save(self._metadata_snapshot, METADATA_SAVE_DELAY)
+
+    @callback
+    def _metadata_snapshot(self) -> dict[str, Any]:
+        """Return the identification caches in a JSON-serializable form."""
+        return {
+            "gear": {
+                str(address): asdict(metadata)
+                for address, metadata in self._metadata.items()
+            },
+            "device": {
+                str(address): asdict(metadata)
+                for address, metadata in self._device_metadata.items()
+            },
+            "sensor": {
+                f"{address}:{instance}": asdict(data)
+                for (address, instance), data in self.input_devices.items()
+            },
+        }
+
+    def _apply_device_metadata(
+        self, address: int, metadata: DaliDeviceData, *, input_device: bool
+    ) -> None:
+        """Push freshly read identification data onto an existing registry device.
+
+        Gear and control-device entities are created from the fast initial scan
+        before identification data has been read, so the registry entry is
+        updated in place once the deferred memory-bank read completes.
+        """
+        device_registry = dr.async_get(self.hass)
+        device = device_registry.async_get_device_by_identifier(
+            (
+                DOMAIN,
+                registry_identifier(
+                    self.config_entry.entry_id, address, input_device=input_device
+                ),
+            ),
+            self.config_entry.entry_id,
+        )
+        if device is None or metadata == DaliDeviceData():
+            return
+        device_registry.async_update_device(
+            device.id,
+            model_id=str(metadata.gtin) if metadata.gtin is not None else UNDEFINED,
+            serial_number=(
+                str(metadata.identification_number)
+                if metadata.identification_number is not None
+                else UNDEFINED
+            ),
+            sw_version=(
+                metadata.firmware_version
+                if metadata.firmware_version is not None
+                else UNDEFINED
+            ),
+            hw_version=(
+                metadata.hardware_version
+                if metadata.hardware_version is not None
+                else UNDEFINED
+            ),
+        )
 
     @property
     def device_instances(self) -> tuple[tuple[int, int, int], ...]:
@@ -270,18 +363,24 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             data[address] = gear
         self.async_set_updated_data(data)
 
-    async def _query_gear(self, address: int) -> DaliGearData | None:
+    async def _query_gear(
+        self, address: int, *, fast: bool = False
+    ) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent.
 
         A known gear is queried again after a miss so a single dropped DALI
-        response does not flip a light to unavailable.
+        response does not flip a light to unavailable. ``fast`` skips the slow
+        memory-bank reads (identification data and emergency diagnostics) so
+        the initial refresh does not block setup; they are filled in later.
         """
-        gear = await self._query_gear_once(address)
+        gear = await self._query_gear_once(address, fast=fast)
         if gear is None and self.data and address in self.data:
-            gear = await self._query_gear_once(address)
+            gear = await self._query_gear_once(address, fast=fast)
         return gear
 
-    async def _query_gear_once(self, address: int) -> DaliGearData | None:
+    async def _query_gear_once(
+        self, address: int, *, fast: bool = False
+    ) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent."""
         gear_address = GearShort(address)
         try:
@@ -383,7 +482,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                         xy_color = (x / 65535, y / 65535)
             emergency_data = None
             if DEVICE_TYPE_EMERGENCY in device_types:
-                emergency_data = await self._query_emergency(gear_address)
+                emergency_data = await self._query_emergency(gear_address, fast=fast)
         except (OSError, TimeoutError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -393,9 +492,13 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             return None
 
         metadata = self._metadata.get(address)
-        if metadata is None:
+        if metadata is None and not fast:
             metadata = await self._query_metadata(gear_address)
             self._metadata[address] = metadata
+            self._apply_device_metadata(address, metadata, input_device=False)
+            self._persist_metadata()
+        if metadata is None:
+            metadata = DaliDeviceData()
 
         return DaliGearData(
             level=_dali_level_to_brightness(
@@ -418,21 +521,27 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             hardware_version=metadata.hardware_version,
         )
 
-    async def _query_emergency(self, gear_address: GearShort) -> DaliEmergencyData:
+    async def _query_emergency(
+        self, gear_address: GearShort, *, fast: bool = False
+    ) -> DaliEmergencyData:
         """Read DT1 (IEC 62386-202) status, measurements and MB208 diagnostics.
 
         The four status bytes and the measurement values come from a single
         ``QueryEmergencyInformation`` transaction; the slower memory-bank-208
         diagnostics are read separately and a bank a gear does not implement
-        simply leaves those fields unset.
+        simply leaves those fields unset. ``fast`` skips the memory-bank-208
+        read entirely so the initial refresh is not held up by it; the periodic
+        refresh fills the diagnostics in afterwards.
         """
         info_ = await self.driver.run_sequence(QueryEmergencyInformation(gear_address))
-        try:
-            memory = await self.driver.run_sequence(
-                emergency.BANK_208.read_all(gear_address)
-            )
-        except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
-            memory = {}
+        memory: dict[type, Any] = {}
+        if not fast:
+            try:
+                memory = await self.driver.run_sequence(
+                    emergency.BANK_208.read_all(gear_address)
+                )
+            except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
+                memory = {}
 
         return DaliEmergencyData(
             mode=info_.emergency_mode,
@@ -625,7 +734,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 translation_key="update_failed",
             ) from err
 
-    async def async_discover_control_devices(self) -> None:
+    async def async_discover_control_devices(self, *, fast: bool = False) -> None:
         """Enumerate control devices and configure their event reporting.
 
         Runs the quiescent autodiscover scan, then reads identification data
@@ -633,7 +742,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         autodiscover only adds to the instance map, so this folds in a device
         missed at connect or added since the last run. It silences input
         devices for the duration of the scan, so it runs at startup, on demand,
-        and after commissioning rather than on the periodic bus poll.
+        and after commissioning rather than on the periodic bus poll. ``fast``
+        defers the control-device identification reads so the initial refresh is
+        not held up; sensor metadata is still read as it defines the entity.
         """
         try:
             await self.driver.run_sequence(self.driver.dev_inst_map.autodiscover())
@@ -647,21 +758,31 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             return
         for address, _instance in self.driver.dev_inst_map.mapping:
             address_int = getattr(address, "address", address)
-            if address_int not in self._device_metadata:
-                self._device_metadata[address_int] = await self._query_metadata(
+            if address_int not in self._device_metadata and not fast:
+                metadata = await self._query_metadata(
                     address
                     if isinstance(address, DeviceShort)
                     else DeviceShort(address)
                 )
+                self._device_metadata[address_int] = metadata
+                self._apply_device_metadata(address_int, metadata, input_device=True)
+                self._persist_metadata()
         for address, instance, instance_type in self.device_instances:
-            if instance_type == 6 and (address, instance) not in self.input_devices:
-                device_short = DeviceShort(address)
-                instance_number = InstanceNumber(instance)
-                sensor_data = await self._query_general_sensor(device_short, instance)
+            if instance_type != 6:
+                continue
+            key = (address, instance)
+            device_short = DeviceShort(address)
+            instance_number = InstanceNumber(instance)
+            if key not in self.input_devices:
+                self.input_devices[key] = await self._query_general_sensor(
+                    device_short, instance
+                )
+                self._persist_metadata()
+            if key not in self._configured_instances:
                 await self._configure_general_sensor_events(
                     device_short, instance_number
                 )
-                self.input_devices[(address, instance)] = sensor_data
+                self._configured_instances.add(key)
         self.async_update_listeners()
 
     @override
@@ -674,6 +795,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         devices are enumerated once at startup and otherwise on demand, so the
         periodic poll never puts the bus quiescent and silences input devices.
         """
+        fast = self._initial_refresh
         now = self.hass.loop.time()
         full_scan = (
             self._last_full_scan is None
@@ -682,20 +804,50 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         addresses = range(64) if full_scan else tuple(self.data or ())
         data: dict[int, DaliGearData] = {}
         for address in addresses:
-            gear = await self._query_gear(address)
+            gear = await self._query_gear(address, fast=fast)
             if gear is not None:
                 data[address] = gear
         if not full_scan:
             return data
         self._last_full_scan = now
         if not self._discovered:
-            await self.async_discover_control_devices()
+            await self.async_discover_control_devices(fast=fast)
             self._discovered = True
         self._update_unaddressed_gear_issue(await self._has_unaddressed_gear())
         self._update_unaddressed_control_device_issue(
             await self._has_unaddressed_control_devices()
         )
+        self._initial_refresh = False
         return data
+
+    async def async_enrich_deferred_data(self) -> None:
+        """Read the identification and diagnostics data deferred past setup.
+
+        The initial refresh skips the slow memory-bank reads so setup completes
+        quickly. This runs once afterwards to read identification metadata for
+        every discovered gear and control device, update their registry entries,
+        and trigger a normal refresh that fills in the emergency diagnostics.
+        """
+        try:
+            for address in list(self.data or {}):
+                if address not in self._metadata:
+                    metadata = await self._query_metadata(GearShort(address))
+                    self._metadata[address] = metadata
+                    self._apply_device_metadata(address, metadata, input_device=False)
+            device_addresses = {
+                address for address, _instance, _type in self.device_instances
+            }
+            for address in device_addresses:
+                if address not in self._device_metadata:
+                    metadata = await self._query_metadata(DeviceShort(address))
+                    self._device_metadata[address] = metadata
+                    self._apply_device_metadata(address, metadata, input_device=True)
+        except OSError, TimeoutError:
+            # A transport error here only delays enrichment; the periodic
+            # refresh reads any still-missing metadata and diagnostics.
+            LOGGER.debug("Deferred DALI metadata read failed; retrying on next poll")
+        self._persist_metadata()
+        await self.async_refresh()
 
     async def _has_unaddressed_gear(self) -> bool:
         """Return whether any control gear on the bus lacks a short address."""

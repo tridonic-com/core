@@ -2,6 +2,7 @@
 
 from collections.abc import Generator
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from dali.address import DeviceShort, GearShort
@@ -103,6 +104,91 @@ async def test_metadata_success(
     assert gear.identification_number == 1
     assert gear.firmware_version == "1.0"
     assert gear.hardware_version == "2.1"
+
+
+async def test_initial_refresh_defers_slow_memory_reads(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the first refresh skips identification and emergency diagnostics."""
+    data = await coordinator._async_update_data()
+
+    # Identification metadata (memory bank 0) is not read during the fast pass.
+    assert data[0].gtin is None
+    assert coordinator._metadata == {}
+    # Emergency status is read, but the slow bank-208 diagnostics are deferred.
+    assert data[1].emergency is not None
+    assert data[1].emergency.status == 0b00001000
+    assert data[1].emergency.control_gear_temperature is None
+
+    # A later full refresh reads the deferred data.
+    coordinator._last_full_scan = None
+    data = await coordinator._async_update_data()
+
+    assert data[0].gtin == 1234567654321
+    assert data[1].emergency is not None
+    assert data[1].emergency.control_gear_temperature == 25
+
+
+async def test_metadata_cache_is_restored(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Test persisted identification data is reused instead of re-read."""
+    entry = MockConfigEntry(domain=DOMAIN)
+    hass_storage[f"{DOMAIN}.{entry.entry_id}_metadata"] = {
+        "version": 1,
+        "data": {
+            "gear": {
+                "0": {
+                    "gtin": 42,
+                    "identification_number": 7,
+                    "firmware_version": "9.9",
+                    "hardware_version": "8.8",
+                }
+            },
+            "device": {"3": {"identification_number": 11}},
+            "sensor": {"3:0": {"quantity_name": 1, "resolution": 9}},
+        },
+    }
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    await coordinator.async_load_metadata_cache()
+
+    assert coordinator._metadata[0].gtin == 42
+    assert coordinator._device_metadata[3].identification_number == 11
+    assert coordinator.input_devices[(3, 0)].resolution == 9
+    # The fast initial pass serves the cached value without a bank-0 read, so
+    # the gear keeps the restored GTIN rather than the one the bus would report.
+    gear = await coordinator._query_gear(0, fast=True)
+    assert gear is not None
+    assert gear.gtin == 42
+
+
+async def test_metadata_is_persisted_after_read(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test freshly read identification data is written to the store."""
+    await coordinator._query_gear(0)
+
+    snapshot = coordinator._metadata_snapshot()
+
+    assert snapshot["gear"]["0"]["gtin"] == 1234567654321
+    assert snapshot["gear"]["0"]["firmware_version"] == "1.0"
+
+
+async def test_enrich_deferred_data_survives_transport_error(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a transport error during deferred enrichment is swallowed."""
+    await coordinator.async_refresh()
+
+    with patch.object(fake_dali_driver, "run_sequence", side_effect=OSError("offline")):
+        await coordinator.async_enrich_deferred_data()
+
+    # Enrichment never completed, so no identification metadata was cached; the
+    # periodic refresh is left to retry rather than the error propagating.
+    assert coordinator._metadata == {}
 
 
 async def test_dt8_color_capabilities(
@@ -293,6 +379,8 @@ async def test_device_instance_metadata_and_event_listener(
         hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
     )
     await coordinator._async_update_data()
+    # Identification data is read lazily after the fast initial refresh.
+    await coordinator.async_enrich_deferred_data()
     received: list[object] = []
     remove_listener = coordinator.async_add_event_listener(received.append)
     coordinator.start_event_listener()
