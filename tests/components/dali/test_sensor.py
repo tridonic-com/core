@@ -155,3 +155,33 @@ async def test_emergency_sensor_platform_creates_entities(
     battery_state = hass.states.get("sensor.usb_dali2_1_gear_battery")
     assert battery_state is not None
     assert battery_state.state == "100"
+
+
+@pytest.mark.parametrize(
+    "entity_id",
+    [
+        "sensor.usb_dali2_0_gear_batch_number",
+        "sensor.usb_dali2_1_sensor_batch_number",
+    ],
+    ids=["control_gear", "control_device"],
+)
+async def test_batch_number_sensor_reports_the_printed_number(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver, entity_id: str
+) -> None:
+    """Test the batch number is its own entity, as the registry has no field for it."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 3): 6}
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == "0000000000"

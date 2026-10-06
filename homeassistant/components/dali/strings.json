@@ -209,6 +209,9 @@
       "average_power_during_maintenance": {
         "name": "Average power during maintenance"
       },
+      "batch_number": {
+        "name": "Batch number"
+      },
       "battery_connected_time_total": {
         "name": "Battery connected time"
       },

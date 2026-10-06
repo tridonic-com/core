@@ -576,6 +576,17 @@ async def test_device_info_uses_gtin_as_model_id(
     assert device_info["model_id"] == "1234567654321"
 
 
+async def test_device_info_uses_the_printed_serial_number(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test the serial number is the one printed on the device, not the raw value."""
+    coordinator.data = {5: DaliGearData(serial_no="080706", batch_no="0504030201")}
+
+    device_info = coordinator.device_info("entry", "USB-DALI2", 5)
+
+    assert device_info["serial_number"] == "080706"
+
+
 @pytest.mark.parametrize(
     ("device_types", "expected_model"),
     [

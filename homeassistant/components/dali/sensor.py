@@ -436,6 +436,38 @@ async def async_setup_entry(
     async_add_new_entities()
     entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
 
+    known_batch_gear: set[int] = set()
+    known_batch_devices: set[int] = set()
+
+    @callback
+    def async_add_batch_number_sensors() -> None:
+        entities: list[SensorEntity] = []
+        for address in set(coordinator.data) - known_batch_gear:
+            known_batch_gear.add(address)
+            entities.append(
+                DaliBatchNumber(coordinator, entry.entry_id, entry.title, address)
+            )
+        device_addresses = {
+            address for address, _instance, _type in coordinator.device_instances
+        }
+        for address in device_addresses - known_batch_devices:
+            known_batch_devices.add(address)
+            entities.append(
+                DaliBatchNumber(
+                    coordinator,
+                    entry.entry_id,
+                    entry.title,
+                    address,
+                    input_device=True,
+                )
+            )
+        async_add_entities(entities)
+
+    async_add_batch_number_sensors()
+    entry.async_on_unload(
+        coordinator.async_add_listener(async_add_batch_number_sensors)
+    )
+
 
 class DaliIlluminance(SensorEntity):
     """Representation of a DALI-2 relative illuminance instance."""
@@ -555,6 +587,46 @@ class DaliPart306Sensor(SensorEntity):
             == self._key
         ):
             self.async_write_ha_state()
+
+
+class DaliBatchNumber(CoordinatorEntity[DaliCoordinator], SensorEntity):
+    """Representation of the batch number printed on a bus unit.
+
+    The device registry has a field for the serial number but none for the
+    batch number, which memory bank 0 stores alongside it, so it is surfaced as
+    its own labelled entity rather than folded into the serial number.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "batch_number"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: DaliCoordinator,
+        entry_id: str,
+        title: str,
+        address: int,
+        *,
+        input_device: bool = False,
+    ) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._address = address
+        self._input_device = input_device
+        kind = "controldevice_" if input_device else ""
+        self._attr_unique_id = f"{entry_id}_{address}_{kind}batch_number"
+        self._attr_device_info = coordinator.device_info(
+            entry_id, title, address, input_device=input_device
+        )
+
+    @property
+    @override
+    def native_value(self) -> str | None:
+        """Return the batch number read from memory bank 0."""
+        return self.coordinator.device_data(
+            self._address, input_device=self._input_device
+        ).batch_no
 
 
 class DaliEmergencySensor(CoordinatorEntity[DaliCoordinator], SensorEntity):

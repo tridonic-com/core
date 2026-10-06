@@ -336,9 +336,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             device.id,
             model_id=str(metadata.gtin) if metadata.gtin is not None else UNDEFINED,
             serial_number=(
-                str(metadata.identification_number)
-                if metadata.identification_number is not None
-                else UNDEFINED
+                metadata.serial_no if metadata.serial_no is not None else UNDEFINED
             ),
             sw_version=(
                 metadata.firmware_version
@@ -1063,6 +1061,21 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         if transport := getattr(self.driver, "_transport", None):
             transport.close()
 
+    def device_data(
+        self, address: int, *, input_device: bool = False
+    ) -> DaliDeviceData:
+        """Return the memory bank 0 data held for a gear or control device.
+
+        A gear and a control device can share a numeric address, so each kind
+        prefers its own cache and falls back to the other's for bus units that
+        implement both.
+        """
+        if input_device:
+            data = self._device_metadata.get(address) or self.data.get(address)
+        else:
+            data = self.data.get(address) or self._device_metadata.get(address)
+        return data if data is not None else DaliDeviceData()
+
     def device_info(
         self, entry_id: str, title: str, address: int, *, input_device: bool = False
     ) -> DeviceInfo:
@@ -1073,12 +1086,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         numeric address while being distinct on the bus. The registry identifier
         therefore encodes the kind to keep them separate devices.
         """
-        if input_device:
-            data = self._device_metadata.get(address) or self.data.get(address)
-        else:
-            data = self.data.get(address) or self._device_metadata.get(address)
-        if data is None:
-            data = DaliDeviceData()
+        data = self.device_data(address, input_device=input_device)
         kind = "sensor" if input_device else "gear"
         if input_device:
             model = self._control_device_model(address)
