@@ -33,7 +33,12 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
 from .const import DEVICE_TYPE_EMERGENCY
-from .coordinator import DaliCoordinator, DaliEmergencyData, DaliGeneralSensorData
+from .coordinator import (
+    DaliCoordinator,
+    DaliDeviceData,
+    DaliEmergencyData,
+    DaliGeneralSensorData,
+)
 
 PARALLEL_UPDATES = 0
 
@@ -143,6 +148,27 @@ DALI_PART306_SENSOR_TYPES: dict[int, DaliPart306SensorDescription] = {
         state_class=SensorStateClass.MEASUREMENT,
     ),
 }
+
+
+@dataclass(frozen=True, kw_only=True)
+class DaliIdentificationSensorDescription(SensorEntityDescription):
+    """Description of a memory bank 0 identification value."""
+
+    value_fn: Callable[[DaliDeviceData], str | int | None]
+
+
+IDENTIFICATION_SENSOR_TYPES: tuple[DaliIdentificationSensorDescription, ...] = (
+    DaliIdentificationSensorDescription(
+        key="batch_number",
+        translation_key="batch_number",
+        value_fn=lambda data: data.batch_no,
+    ),
+    DaliIdentificationSensorDescription(
+        key="identification_number",
+        translation_key="identification_number",
+        value_fn=lambda data: data.identification_number,
+    ),
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -436,36 +462,41 @@ async def async_setup_entry(
     async_add_new_entities()
     entry.async_on_unload(coordinator.async_add_listener(async_add_new_entities))
 
-    known_batch_gear: set[int] = set()
-    known_batch_devices: set[int] = set()
+    known_identification_gear: set[int] = set()
+    known_identification_devices: set[int] = set()
 
     @callback
-    def async_add_batch_number_sensors() -> None:
+    def async_add_identification_sensors() -> None:
         entities: list[SensorEntity] = []
-        for address in set(coordinator.data) - known_batch_gear:
-            known_batch_gear.add(address)
-            entities.append(
-                DaliBatchNumber(coordinator, entry.entry_id, entry.title, address)
+        for address in set(coordinator.data) - known_identification_gear:
+            known_identification_gear.add(address)
+            entities.extend(
+                DaliIdentificationSensor(
+                    coordinator, entry.entry_id, entry.title, address, description
+                )
+                for description in IDENTIFICATION_SENSOR_TYPES
             )
         device_addresses = {
             address for address, _instance, _type in coordinator.device_instances
         }
-        for address in device_addresses - known_batch_devices:
-            known_batch_devices.add(address)
-            entities.append(
-                DaliBatchNumber(
+        for address in device_addresses - known_identification_devices:
+            known_identification_devices.add(address)
+            entities.extend(
+                DaliIdentificationSensor(
                     coordinator,
                     entry.entry_id,
                     entry.title,
                     address,
+                    description,
                     input_device=True,
                 )
+                for description in IDENTIFICATION_SENSOR_TYPES
             )
         async_add_entities(entities)
 
-    async_add_batch_number_sensors()
+    async_add_identification_sensors()
     entry.async_on_unload(
-        coordinator.async_add_listener(async_add_batch_number_sensors)
+        coordinator.async_add_listener(async_add_identification_sensors)
     )
 
 
@@ -589,17 +620,18 @@ class DaliPart306Sensor(SensorEntity):
             self.async_write_ha_state()
 
 
-class DaliBatchNumber(CoordinatorEntity[DaliCoordinator], SensorEntity):
-    """Representation of the batch number printed on a bus unit.
+class DaliIdentificationSensor(CoordinatorEntity[DaliCoordinator], SensorEntity):
+    """Representation of a memory bank 0 identification value of a bus unit.
 
     The device registry has a field for the serial number but none for the
-    batch number, which memory bank 0 stores alongside it, so it is surfaced as
-    its own labelled entity rather than folded into the serial number.
+    batch or identification number that memory bank 0 stores alongside it, so
+    those get their own labelled entities rather than being folded into the
+    serial number. They carry no entity category so they are listed with the
+    device's other values instead of being tucked away under diagnostics.
     """
 
     _attr_has_entity_name = True
-    _attr_translation_key = "batch_number"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    entity_description: DaliIdentificationSensorDescription
 
     def __init__(
         self,
@@ -607,26 +639,28 @@ class DaliBatchNumber(CoordinatorEntity[DaliCoordinator], SensorEntity):
         entry_id: str,
         title: str,
         address: int,
+        description: DaliIdentificationSensorDescription,
         *,
         input_device: bool = False,
     ) -> None:
         """Initialize the entity."""
         super().__init__(coordinator)
+        self.entity_description = description
         self._address = address
         self._input_device = input_device
         kind = "controldevice_" if input_device else ""
-        self._attr_unique_id = f"{entry_id}_{address}_{kind}batch_number"
+        self._attr_unique_id = f"{entry_id}_{address}_{kind}{description.key}"
         self._attr_device_info = coordinator.device_info(
             entry_id, title, address, input_device=input_device
         )
 
     @property
     @override
-    def native_value(self) -> str | None:
-        """Return the batch number read from memory bank 0."""
-        return self.coordinator.device_data(
-            self._address, input_device=self._input_device
-        ).batch_no
+    def native_value(self) -> str | int | None:
+        """Return the identification value read from memory bank 0."""
+        return self.entity_description.value_fn(
+            self.coordinator.device_data(self._address, input_device=self._input_device)
+        )
 
 
 class DaliEmergencySensor(CoordinatorEntity[DaliCoordinator], SensorEntity):

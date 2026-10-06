@@ -17,6 +17,7 @@ from homeassistant.components.dali.sensor import (
 )
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 from .conftest import FakeDaliDriver
 
@@ -158,17 +159,32 @@ async def test_emergency_sensor_platform_creates_entities(
 
 
 @pytest.mark.parametrize(
-    "entity_id",
+    ("entity_id", "expected_state"),
     [
-        "sensor.usb_dali2_0_gear_batch_number",
-        "sensor.usb_dali2_1_sensor_batch_number",
+        ("sensor.usb_dali2_0_gear_batch_number", "0000000000"),
+        ("sensor.usb_dali2_1_sensor_batch_number", "0000000000"),
+        ("sensor.usb_dali2_0_gear_identification_number", "1"),
+        ("sensor.usb_dali2_1_sensor_identification_number", "1"),
     ],
-    ids=["control_gear", "control_device"],
+    ids=[
+        "gear_batch_number",
+        "device_batch_number",
+        "gear_identification_number",
+        "device_identification_number",
+    ],
 )
-async def test_batch_number_sensor_reports_the_printed_number(
-    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver, entity_id: str
+async def test_identification_sensors_report_the_printed_numbers(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    fake_dali_driver: FakeDaliDriver,
+    entity_id: str,
+    expected_state: str,
 ) -> None:
-    """Test the batch number is its own entity, as the registry has no field for it."""
+    """Test the values the device registry has no field for get their own entities.
+
+    They stand in for registry fields that do not exist, so they carry no
+    entity category: hiding them under diagnostics would defeat the point.
+    """
     fake_dali_driver.dev_inst_map.mapping = {(1, 3): 6}
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
@@ -184,4 +200,5 @@ async def test_batch_number_sensor_reports_the_printed_number(
 
     state = hass.states.get(entity_id)
     assert state is not None
-    assert state.state == "0000000000"
+    assert state.state == expected_state
+    assert entity_registry.async_get(entity_id).entity_category is None

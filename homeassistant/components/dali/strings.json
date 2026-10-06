@@ -260,6 +260,9 @@
       "function_test_time": {
         "name": "Function test time"
       },
+      "identification_number": {
+        "name": "Identification number"
+      },
       "illuminance": {
         "name": "Illuminance"
       },
