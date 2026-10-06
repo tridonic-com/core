@@ -89,8 +89,12 @@ LOGGER = logging.getLogger(__name__)
 
 # Identification metadata is static per device, so it is persisted and restored
 # across restarts to avoid re-reading whole memory banks byte by byte each time.
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 METADATA_SAVE_DELAY = 10
+
+# Tridonic's GTIN prefix. Their firmware version bytes carry a build number
+# where IEC 62386-102 has a plain minor version.
+TRIDONIC_GTIN_PREFIX = "9006210"
 
 # Sensor metadata is read once and cached, so a single corrupted-but-parseable
 # response skews every later measurement. Confirm each value with repeated reads.
@@ -105,6 +109,8 @@ class DaliDeviceData:
 
     gtin: int | None = None
     identification_number: int | None = None
+    serial_no: str | None = None
+    batch_no: str | None = None
     firmware_version: str | None = None
     hardware_version: str | None = None
 
@@ -211,6 +217,25 @@ class DaliGeneralSensorData(DaliDeviceData):
     input_signal_signed: bool | None = None
 
 
+class DaliMetadataStore(Store[dict[str, Any]]):
+    """Store for the cached memory bank 0 identification data."""
+
+    @override
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Discard a cache written by an earlier decoding of memory bank 0.
+
+        The bank is static, so the entries are simply dropped and read again
+        rather than converted; the deferred enrichment picks them up in the
+        background on the next start.
+        """
+        return {}
+
+
 class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     """Coordinate DALI gear discovery and state updates."""
 
@@ -239,7 +264,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._gear_config: dict[int, DaliGearConfig] = {}
         self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
         self._configured_instances: set[tuple[int, int]] = set()
-        self._store: Store[dict[str, Any]] = Store(
+        self._store: Store[dict[str, Any]] = DaliMetadataStore(
             hass, STORAGE_VERSION, f"{DOMAIN}.{config_entry.entry_id}_metadata"
         )
         self._event_listeners: set[Callable[[object], None]] = set()
@@ -568,6 +593,8 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             emergency=emergency_data,
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,
+            serial_no=metadata.serial_no,
+            batch_no=metadata.batch_no,
             firmware_version=metadata.firmware_version,
             hardware_version=metadata.hardware_version,
         )
@@ -685,10 +712,15 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
             return DaliDeviceData()
 
+        gtin = values.get(info.GTIN)
+        identification_number = values.get(info.IdentificationNumber)
+        serial_no, batch_no = _serial_and_batch_number(identification_number)
         return DaliDeviceData(
-            gtin=values.get(info.GTIN),
-            identification_number=values.get(info.IdentificationNumber),
-            firmware_version=values.get(info.FirmwareVersion),
+            gtin=gtin,
+            identification_number=identification_number,
+            serial_no=serial_no,
+            batch_no=batch_no,
+            firmware_version=_firmware_version(values.get(info.FirmwareVersion), gtin),
             hardware_version=values.get(info.HardwareVersion),
         )
 
@@ -743,6 +775,8 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             else None,
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,
+            serial_no=metadata.serial_no,
+            batch_no=metadata.batch_no,
             firmware_version=metadata.firmware_version,
             hardware_version=metadata.hardware_version,
         )
@@ -1062,11 +1096,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             name=f"{self._interface_label(title)}/{address} ({kind})",
             model=model,
             model_id=str(data.gtin) if data.gtin is not None else None,
-            serial_number=(
-                str(data.identification_number)
-                if data.identification_number is not None
-                else None
-            ),
+            serial_number=data.serial_no,
             sw_version=data.firmware_version,
             hw_version=data.hardware_version,
         )
@@ -1193,6 +1223,43 @@ def _response_value(response: object) -> int | None:
     """Return a numeric response value."""
     value = getattr(response, "value", None)
     return value if isinstance(value, int) else None
+
+
+def _serial_and_batch_number(
+    identification_number: object,
+) -> tuple[str | None, str | None]:
+    """Split a bus unit's identification number into serial and batch number.
+
+    The eight bytes of the memory bank 0 identification number carry the serial
+    number in the low three and the batch number in the high five, each written
+    out least significant byte first.
+    """
+    if not isinstance(identification_number, int):
+        return None, None
+    raw = identification_number.to_bytes(8, "little")
+    return (
+        "".join(f"{byte:02X}" for byte in raw[0:3]),
+        "".join(f"{byte:02X}" for byte in raw[3:8]),
+    )
+
+
+def _firmware_version(version: object, gtin: object) -> str | None:
+    """Return the firmware version, in Tridonic's format on Tridonic units.
+
+    The library renders the two version bytes as "<first>.<second>", but on
+    Tridonic gear the first byte packs the major and minor version the way IEC
+    62386-102 packs a single-byte version, and the second byte is the build
+    number, giving "<major>.<minor>-<build>".
+    """
+    if not isinstance(version, str):
+        return None
+    if not isinstance(gtin, int) or not str(gtin).startswith(TRIDONIC_GTIN_PREFIX):
+        return version
+    first, _, second = version.partition(".")
+    if not first.isdigit() or not second.isdigit():
+        return version
+    packed = int(first)
+    return f"{packed >> 2}.{packed & 0x03}-{second}"
 
 
 def _level_or_mask(response: object) -> int | None:

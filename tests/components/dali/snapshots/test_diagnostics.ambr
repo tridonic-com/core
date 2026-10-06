@@ -18,6 +18,7 @@
     }),
     'gears': dict({
       '0': dict({
+        'batch_no': '0000000000',
         'color_temp_max_mired': None,
         'color_temp_min_mired': None,
         'color_temp_mired': None,
@@ -38,12 +39,14 @@
         'linear_dimming': True,
         'max_level': 254,
         'min_level': 86,
+        'serial_no': '010000',
         'supports_color_temperature': False,
         'supports_xy': False,
         'system_failure_level': 200,
         'xy_color': None,
       }),
       '1': dict({
+        'batch_no': '0000000000',
         'color_temp_max_mired': None,
         'color_temp_min_mired': None,
         'color_temp_mired': None,
@@ -93,12 +96,14 @@
         'linear_dimming': False,
         'max_level': 254,
         'min_level': 1,
+        'serial_no': '010000',
         'supports_color_temperature': False,
         'supports_xy': False,
         'system_failure_level': 255,
         'xy_color': None,
       }),
       '2': dict({
+        'batch_no': '0000000000',
         'color_temp_max_mired': 500,
         'color_temp_min_mired': 153,
         'color_temp_mired': 250,
@@ -119,6 +124,7 @@
         'linear_dimming': False,
         'max_level': 254,
         'min_level': 1,
+        'serial_no': '010000',
         'supports_color_temperature': True,
         'supports_xy': True,
         'system_failure_level': 255,
@@ -130,6 +136,7 @@
     }),
     'input_devices': dict({
       '1_3': dict({
+        'batch_no': '0000000000',
         'firmware_version': '1.0',
         'gtin': 1234567654321,
         'hardware_version': '2.1',
@@ -138,6 +145,7 @@
         'magnitude': 127,
         'quantity_name': 26,
         'resolution': 9,
+        'serial_no': '010000',
         'unit_of_measurement': 9,
       }),
     }),

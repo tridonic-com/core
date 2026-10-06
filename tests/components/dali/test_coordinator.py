@@ -17,6 +17,7 @@ from dali.device.general import (
 from dali.exceptions import DALISequenceError
 from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import QueryControlGearPresent, QueryFadeTimeFadeRate
+from dali.memory import info
 from dali.sequences import progress
 import pytest
 
@@ -106,6 +107,61 @@ async def test_metadata_success(
     assert gear.hardware_version == "2.1"
 
 
+@pytest.mark.parametrize(
+    ("identification_number", "serial_no", "batch_no"),
+    [
+        (0x0102030405060708, "080706", "0504030201"),
+        (0, "000000", "0000000000"),
+        (None, None, None),
+    ],
+    ids=["distinct_bytes", "zero", "not_implemented"],
+)
+async def test_identification_number_splits_into_serial_and_batch(
+    coordinator: DaliCoordinator,
+    fake_dali_driver: FakeDaliDriver,
+    identification_number: int | None,
+    serial_no: str | None,
+    batch_no: str | None,
+) -> None:
+    """Test the identification number is split into its two printed numbers."""
+    fake_dali_driver.metadata[info.IdentificationNumber] = identification_number
+
+    gear = await coordinator._query_metadata(GearShort(0))
+
+    assert gear.serial_no == serial_no
+    assert gear.batch_no == batch_no
+
+
+@pytest.mark.parametrize(
+    ("gtin", "version", "expected"),
+    [
+        (9006210123456, "18.5", "4.2-5"),
+        (9006210123456, "0.0", "0.0-0"),
+        (1234567654321, "18.5", "18.5"),
+        (None, "18.5", "18.5"),
+    ],
+    ids=["tridonic", "tridonic_zero", "other_manufacturer", "no_gtin"],
+)
+async def test_tridonic_firmware_version_carries_a_build_number(
+    coordinator: DaliCoordinator,
+    fake_dali_driver: FakeDaliDriver,
+    gtin: int | None,
+    version: str,
+    expected: str,
+) -> None:
+    """Test Tridonic gear reports its version as major.minor-build.
+
+    Their first version byte packs major and minor the way IEC 62386-102 packs
+    a single-byte version, leaving the second byte to be the build number.
+    """
+    fake_dali_driver.metadata[info.GTIN] = gtin
+    fake_dali_driver.metadata[info.FirmwareVersion] = version
+
+    gear = await coordinator._query_metadata(GearShort(0))
+
+    assert gear.firmware_version == expected
+
+
 async def test_initial_refresh_defers_slow_memory_reads(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
@@ -137,12 +193,14 @@ async def test_metadata_cache_is_restored(
     """Test persisted identification data is reused instead of re-read."""
     entry = MockConfigEntry(domain=DOMAIN)
     hass_storage[f"{DOMAIN}.{entry.entry_id}_metadata"] = {
-        "version": 1,
+        "version": 2,
         "data": {
             "gear": {
                 "0": {
                     "gtin": 42,
                     "identification_number": 7,
+                    "serial_no": "070000",
+                    "batch_no": "0000000000",
                     "firmware_version": "9.9",
                     "hardware_version": "8.8",
                 }
@@ -163,6 +221,28 @@ async def test_metadata_cache_is_restored(
     gear = await coordinator._query_gear(0, fast=True)
     assert gear is not None
     assert gear.gtin == 42
+
+
+async def test_outdated_metadata_cache_is_discarded(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Test a cache from before the bank 0 decoding changed is dropped.
+
+    Its firmware versions carry the old format and it has no serial or batch
+    number, and nothing re-reads a device whose metadata is already cached.
+    """
+    entry = MockConfigEntry(domain=DOMAIN)
+    hass_storage[f"{DOMAIN}.{entry.entry_id}_metadata"] = {
+        "version": 1,
+        "data": {"gear": {"0": {"gtin": 42, "firmware_version": "9.9"}}},
+    }
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    await coordinator.async_load_metadata_cache()
+
+    assert coordinator._metadata == {}
 
 
 async def test_metadata_is_persisted_after_read(
