@@ -34,6 +34,7 @@ from dali.gear.general import (
     QueryMaxLevel,
     QueryMinLevel,
     QueryMissingShortAddress,
+    QuerySystemFailureLevel,
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import EmergencyInformation
@@ -76,6 +77,8 @@ class FakeDaliDriver:
         self.min_levels = {0: 86, 2: 1}
         self.max_levels: dict[int, int] = {}
         self.physical_min_levels = {0: 86}
+        # Gear without an entry answers MASK, the power-up default.
+        self.system_failure_levels: dict[int, int] = {0: 200}
         # (fade time code, fade rate code); the factory default is (0, 7), and
         # None models a gear whose answer arrives with a framing error.
         self.fade: dict[int, tuple[int, int] | None] = {0: (4, 7)}
@@ -190,6 +193,10 @@ class FakeDaliDriver:
             return SimpleNamespace(value=self.min_levels.get(address, 1))
         if isinstance(command, QueryMaxLevel):
             return SimpleNamespace(value=self.max_levels.get(address, 254))
+        if isinstance(command, QuerySystemFailureLevel):
+            # NumericResponseMask reports 255 as a string, not as a number.
+            level = self.system_failure_levels.get(address, 255)
+            return SimpleNamespace(value="MASK" if level == 255 else level)
         if isinstance(command, QueryFadeTimeFadeRate):
             fade = self.fade.get(address, (0, 7))
             if fade is None:
@@ -329,6 +336,9 @@ class FakeDaliDriver:
             )
         elif command_name == "SetMaxLevel":
             self.max_levels[address] = max(value, self.min_levels.get(address, 1))
+        elif command_name == "SetSystemFailureLevel":
+            # Stored verbatim; the gear only applies the limits when it fails.
+            self.system_failure_levels[address] = value
         elif command_name == "SetFadeTime":
             self.fade[address] = (value & 0x0F, fade_rate)
         elif command_name == "SetFadeRate":

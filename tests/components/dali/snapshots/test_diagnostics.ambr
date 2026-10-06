@@ -40,6 +40,7 @@
         'min_level': 86,
         'supports_color_temperature': False,
         'supports_xy': False,
+        'system_failure_level': 200,
         'xy_color': None,
       }),
       '1': dict({
@@ -94,6 +95,7 @@
         'min_level': 1,
         'supports_color_temperature': False,
         'supports_xy': False,
+        'system_failure_level': 255,
         'xy_color': None,
       }),
       '2': dict({
@@ -119,6 +121,7 @@
         'min_level': 1,
         'supports_color_temperature': True,
         'supports_xy': True,
+        'system_failure_level': 255,
         'xy_color': list([
           0.5000076295109483,
           0.2500038147554742,

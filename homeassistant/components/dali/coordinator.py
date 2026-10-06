@@ -47,6 +47,7 @@ from dali.gear.general import (
     QueryMaxLevel,
     QueryMinLevel,
     QueryMissingShortAddress,
+    QuerySystemFailureLevel,
 )
 from dali.gear.sequences import (
     QueryDT6DimmingCurve,
@@ -80,6 +81,7 @@ from .const import (
     unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
 )
+from .helpers import MASK_LEVEL
 
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
@@ -167,6 +169,7 @@ class DaliGearConfig:
 
     min_level: int = 1
     max_level: int | None = None
+    system_failure_level: int | None = None
     fade_time: int | None = None
     fade_rate: int | None = None
     extended_fade_time_base: int | None = None
@@ -180,6 +183,7 @@ class DaliGearData(DaliDeviceData):
     level: int | None = None
     min_level: int = 1
     max_level: int | None = None
+    system_failure_level: int | None = None
     fade_time: int | None = None
     fade_rate: int | None = None
     extended_fade_time_base: int | None = None
@@ -547,6 +551,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             ),
             min_level=config.min_level,
             max_level=config.max_level,
+            system_failure_level=config.system_failure_level,
             fade_time=config.fade_time,
             fade_rate=config.fade_rate,
             extended_fade_time_base=config.extended_fade_time_base,
@@ -575,6 +580,11 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         max_level = _response_value(await self.driver.send(QueryMaxLevel(gear_address)))
         if max_level is not None and not 1 <= max_level <= 254:
             max_level = None
+        # Every byte is a valid system failure level, so unlike the dimming
+        # limits there is no out-of-range answer to reject.
+        system_failure_level = _level_or_mask(
+            await self.driver.send(QuerySystemFailureLevel(gear_address))
+        )
         # The library's .fade_time/.fade_rate properties read their nibbles out
         # of a framing-error frame too, so decode from the checked value.
         fade = _response_value(
@@ -586,6 +596,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         return DaliGearConfig(
             min_level=min_level,
             max_level=max_level,
+            system_failure_level=system_failure_level,
             fade_time=None if fade is None else (fade >> 4) & 0x0F,
             fade_rate=None if fade is None else fade & 0x0F,
             extended_fade_time_base=base,
@@ -1181,6 +1192,19 @@ def _brightness_to_dali_level(
 def _response_value(response: object) -> int | None:
     """Return a numeric response value."""
     value = getattr(response, "value", None)
+    return value if isinstance(value, int) else None
+
+
+def _level_or_mask(response: object) -> int | None:
+    """Return a level response, keeping the gear's MASK answer as a level.
+
+    ``NumericResponseMask`` reports 255 as the string ``"MASK"``, which is a
+    real stored value meaning "keep the current level", not an unreadable one,
+    so it must not be discarded the way ``_response_value`` discards it.
+    """
+    value = getattr(response, "value", None)
+    if value == "MASK":
+        return MASK_LEVEL
     return value if isinstance(value, int) else None
 
 

@@ -729,6 +729,7 @@ async def test_gear_config_is_decoded(
     assert gear is not None
     assert gear.min_level == 86
     assert gear.max_level == 254
+    assert gear.system_failure_level == 200
     assert gear.fade_time == 4
     assert gear.fade_rate == 7
     assert gear.extended_fade_time_base == 5
@@ -765,6 +766,22 @@ async def test_invalid_max_level_is_discarded(
 
     assert gear is not None
     assert gear.max_level is None
+
+
+async def test_mask_system_failure_level_is_kept(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the MASK answer is decoded as level 255, not discarded.
+
+    The library reports it as a string, which the numeric decoder drops, yet it
+    is a real stored value meaning the gear holds its level on a bus failure.
+    """
+    del fake_dali_driver.system_failure_levels[0]
+
+    gear = await coordinator._query_gear(0)
+
+    assert gear is not None
+    assert gear.system_failure_level == 255
 
 
 async def test_gear_config_is_cached_between_full_scans(

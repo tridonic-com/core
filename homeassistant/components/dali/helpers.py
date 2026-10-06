@@ -68,6 +68,10 @@ MIN_EXTENDED_FADE_TIME = 0.0
 MAX_EXTENDED_FADE_TIME = 960.0
 EXTENDED_FADE_TIME_STEP = 0.1
 
+# Level 255 is MASK, which as a system failure level means "keep the current
+# level" instead of fading to a stored one. It is the power-up default.
+MASK_LEVEL = 255
+
 
 def extended_fade_time_seconds(
     base: int | None, multiplier: int | None

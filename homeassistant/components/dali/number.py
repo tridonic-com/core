@@ -7,7 +7,12 @@ from typing import override
 from dali.address import GearShort
 from dali.command import Command
 from dali.exceptions import DALISequenceError, ResponseError
-from dali.gear.general import SetExtendedFadeTime, SetMaxLevel, SetMinLevel
+from dali.gear.general import (
+    SetExtendedFadeTime,
+    SetMaxLevel,
+    SetMinLevel,
+    SetSystemFailureLevel,
+)
 
 from homeassistant.components.number import (
     NumberDeviceClass,
@@ -26,6 +31,7 @@ from .const import DOMAIN
 from .coordinator import DaliCoordinator, DaliGearData
 from .helpers import (
     EXTENDED_FADE_TIME_STEP,
+    MASK_LEVEL,
     MAX_EXTENDED_FADE_TIME,
     MIN_EXTENDED_FADE_TIME,
     encode_extended_fade_time,
@@ -69,6 +75,20 @@ NUMBER_TYPES: tuple[DaliGearNumberDescription, ...] = (
         native_max_value=254,
         native_step=1,
         value_fn=lambda gear: gear.max_level,
+        encode_fn=int,
+    ),
+    DaliGearNumberDescription(
+        key="system_failure_level",
+        translation_key="system_failure_level",
+        command=SetSystemFailureLevel,
+        entity_category=EntityCategory.CONFIG,
+        mode=NumberMode.BOX,
+        # 0 switches the lamp off on a bus failure and MASK keeps it where it
+        # is, so the range spans the whole byte rather than the dimming range.
+        native_min_value=0,
+        native_max_value=MASK_LEVEL,
+        native_step=1,
+        value_fn=lambda gear: gear.system_failure_level,
         encode_fn=int,
     ),
     DaliGearNumberDescription(

@@ -151,6 +151,9 @@
       },
       "min_level": {
         "name": "Minimum level"
+      },
+      "system_failure_level": {
+        "name": "System failure level"
       }
     },
     "select": {

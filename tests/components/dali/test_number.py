@@ -30,6 +30,7 @@ from tests.common import MockConfigEntry
 MIN_LEVEL_ENTITY = "number.usb_dali2_0_gear_minimum_level"
 MAX_LEVEL_ENTITY = "number.usb_dali2_0_gear_maximum_level"
 EXTENDED_FADE_TIME_ENTITY = "number.usb_dali2_0_gear_extended_fade_time"
+SYSTEM_FAILURE_LEVEL_ENTITY = "number.usb_dali2_0_gear_system_failure_level"
 
 
 async def _setup(hass: HomeAssistant, driver: FakeDaliDriver) -> MockConfigEntry:
@@ -98,7 +99,23 @@ async def test_numbers_report_the_stored_configuration(
 
     assert hass.states.get(MIN_LEVEL_ENTITY).state == "86"
     assert hass.states.get(MAX_LEVEL_ENTITY).state == "254"
+    assert hass.states.get(SYSTEM_FAILURE_LEVEL_ENTITY).state == "200"
     assert hass.states.get(EXTENDED_FADE_TIME_ENTITY).state == "60.0"
+
+
+async def test_mask_system_failure_level_reads_as_a_level(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test gear holding its level on a bus failure reads 255, not unknown.
+
+    MASK is the power-up default, so it has to be distinguishable from a gear
+    that did not answer the query at all.
+    """
+    await _setup(hass, fake_dali_driver)
+
+    assert (
+        hass.states.get("number.usb_dali2_1_gear_system_failure_level").state == "255"
+    )
 
 
 async def test_extended_fade_time_absent_when_unsupported(
@@ -119,6 +136,18 @@ async def test_extended_fade_time_absent_when_unsupported(
         (MIN_LEVEL_ENTITY, 100, (0, "SetMinLevel", 100), "100"),
         (MAX_LEVEL_ENTITY, 200, (0, "SetMaxLevel", 200), "200"),
         (
+            SYSTEM_FAILURE_LEVEL_ENTITY,
+            0,
+            (0, "SetSystemFailureLevel", 0),
+            "0",
+        ),
+        (
+            SYSTEM_FAILURE_LEVEL_ENTITY,
+            255,
+            (0, "SetSystemFailureLevel", 255),
+            "255",
+        ),
+        (
             EXTENDED_FADE_TIME_ENTITY,
             45,
             (0, "SetExtendedFadeTime", 0x34),
@@ -129,6 +158,8 @@ async def test_extended_fade_time_absent_when_unsupported(
         "min_level_clamped_to_physical_minimum",
         "min_level_accepted",
         "max_level_accepted",
+        "system_failure_level_off",
+        "system_failure_level_mask",
         "extended_fade_time_snapped",
     ],
 )
