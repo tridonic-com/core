@@ -174,13 +174,11 @@ async def test_dt8_light_properties_and_color_commands(
 
     with (
         patch.object(coordinator, "async_update_gear", new_callable=AsyncMock),
-        patch.object(
-            fake_dali_driver, "run_sequence", new_callable=AsyncMock
-        ) as run_sequence,
+        patch.object(fake_dali_driver, "send", new_callable=AsyncMock) as send,
     ):
         await light.async_turn_on(color_temp_kelvin=4000, xy_color=(0.1, 0.2))
 
-    assert run_sequence.await_count == 2
+    assert send.await_count == 2
 
 
 async def test_color_temperature_change_preserves_brightness(

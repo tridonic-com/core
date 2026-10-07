@@ -136,7 +136,7 @@ class DaliGearSelect(CoordinatorEntity[DaliCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Write the fade setting to the gear and read back what it stored."""
         try:
-            await self.coordinator.driver.run_sequence(
+            await self.coordinator.driver.send(
                 set_dtr0_variable(
                     self.entity_description.command,
                     GearShort(self._address),

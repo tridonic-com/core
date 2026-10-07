@@ -1,9 +1,8 @@
 """Test the Tridonic DALI coordinator."""
 
-from collections.abc import Generator
-from types import SimpleNamespace
+from types import GeneratorType, SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from dali.address import DeviceShort, GearShort
 from dali.device.general import (
@@ -17,6 +16,7 @@ from dali.device.general import (
 from dali.exceptions import DALISequenceError
 from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import QueryControlGearPresent, QueryFadeTimeFadeRate
+from dali.gear.led import QueryDimmingCurve
 from dali.memory import info
 from dali.sequences import progress
 import pytest
@@ -72,12 +72,17 @@ async def test_metadata_failure_is_ignored(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
     """Test optional metadata failures do not discard a responding gear."""
-    with patch.object(
-        fake_dali_driver,
-        "run_sequence",
-        new_callable=AsyncMock,
-        side_effect=[[6], None, DALISequenceError()],
-    ):
+    original_send = fake_dali_driver.send
+
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
+        if isinstance(msg, GeneratorType) and msg.__name__ == "read_all":
+            msg.close()
+            raise DALISequenceError
+        return await original_send(msg, priority=priority, progress=progress)
+
+    with patch.object(fake_dali_driver, "send", side_effect=send):
         gear = await coordinator._query_gear(0)
 
     assert gear is not None
@@ -263,7 +268,7 @@ async def test_enrich_deferred_data_survives_transport_error(
     """Test a transport error during deferred enrichment is swallowed."""
     await coordinator.async_refresh()
 
-    with patch.object(fake_dali_driver, "run_sequence", side_effect=OSError("offline")):
+    with patch.object(fake_dali_driver, "send", side_effect=OSError("offline")):
         await coordinator.async_enrich_deferred_data()
 
     # Enrichment never completed, so no identification metadata was cached; the
@@ -304,16 +309,17 @@ async def test_unanswered_capability_queries_use_defaults(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
     """Test a gear that ignores capability queries falls back to defaults."""
-    original_run_sequence = fake_dali_driver.run_sequence
+    original_send = fake_dali_driver.send
 
-    async def run_sequence(sequence: Generator, progress: object = None) -> object:
-        if sequence.__name__ == "QueryDT6DimmingCurve":
-            sequence.close()
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
+        if isinstance(msg, QueryDimmingCurve):
             return None
-        return await original_run_sequence(sequence, progress)
+        return await original_send(msg, priority=priority, progress=progress)
 
     fake_dali_driver.color_features = {2: None}
-    with patch.object(fake_dali_driver, "run_sequence", side_effect=run_sequence):
+    with patch.object(fake_dali_driver, "send", side_effect=send):
         gear_dt6 = await coordinator._query_gear(0)
         gear_dt8 = await coordinator._query_gear(2)
 
@@ -353,18 +359,21 @@ async def test_emergency_memory_failure_leaves_diagnostics_unset(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
     """Test an MB208 read failure keeps the status data but drops diagnostics."""
-    original_run_sequence = fake_dali_driver.run_sequence
+    original_send = fake_dali_driver.send
 
-    async def run_sequence(sequence: Generator, progress: object = None) -> object:
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
         if (
-            sequence.__name__ == "read_all"
-            and sequence.gi_frame.f_locals.get("self").address == 208
+            isinstance(msg, GeneratorType)
+            and msg.__name__ == "read_all"
+            and msg.gi_frame.f_locals.get("self").address == 208
         ):
-            sequence.close()
+            msg.close()
             raise DALISequenceError
-        return await original_run_sequence(sequence, progress)
+        return await original_send(msg, priority=priority, progress=progress)
 
-    with patch.object(fake_dali_driver, "run_sequence", side_effect=run_sequence):
+    with patch.object(fake_dali_driver, "send", side_effect=send):
         gear = await coordinator._query_gear(1)
 
     assert gear is not None
@@ -719,8 +728,18 @@ async def test_part_306_query_failure_raises_update_failed(
         hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
     )
 
+    original_send = fake_dali_driver.send
+
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
+        # Fail only the bare Part 306 sensor queries, not the memory-bank read.
+        if not isinstance(msg, GeneratorType):
+            raise OSError("offline")
+        return await original_send(msg, priority=priority, progress=progress)
+
     with (
-        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
+        patch.object(fake_dali_driver, "send", side_effect=send),
         pytest.raises(UpdateFailed),
     ):
         await coordinator._query_general_sensor(DeviceShort(1), 2)

@@ -1,6 +1,6 @@
 """Test the Tridonic DALI integration setup."""
 
-from types import SimpleNamespace
+from types import GeneratorType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.exceptions import DALISequenceError, TransmissionError
@@ -206,12 +206,22 @@ async def test_setup_entry_dali_sequence_failure(
     """Test setup ignores a gear when its device-type query fails."""
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
     entry.add_to_hass(hass)
+    original_send = fake_dali_driver.send
+
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
+        if isinstance(msg, GeneratorType) and msg.__name__ == "QueryDeviceTypes":
+            msg.close()
+            raise DALISequenceError
+        return await original_send(msg, priority=priority, progress=progress)
+
     with (
         patch(
             "homeassistant.components.dali.DriverLubaRs232",
             return_value=fake_dali_driver,
         ),
-        patch.object(fake_dali_driver, "run_sequence", side_effect=DALISequenceError),
+        patch.object(fake_dali_driver, "send", side_effect=send),
         patch.object(
             hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock
         ),

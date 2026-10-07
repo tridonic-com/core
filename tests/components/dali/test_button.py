@@ -206,7 +206,7 @@ async def test_emergency_button_failure_raises_home_assistant_error(
     )
 
     with (
-        patch.object(fake_dali_driver, "run_sequence", side_effect=OSError("offline")),
+        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
         pytest.raises(HomeAssistantError),
     ):
         await button.async_press()

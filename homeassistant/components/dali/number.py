@@ -182,7 +182,7 @@ class DaliGearNumber(CoordinatorEntity[DaliCoordinator], NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Write the value to the gear and read back what it stored."""
         try:
-            await self.coordinator.driver.run_sequence(
+            await self.coordinator.driver.send(
                 set_dtr0_variable(
                     self.entity_description.command,
                     GearShort(self._address),

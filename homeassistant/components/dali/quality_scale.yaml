@@ -73,7 +73,7 @@ rules:
     status: done
     comment: >-
       python-dali's DriverLubaRs232 is asyncio-native; the integration awaits
-      connect/send/run_sequence directly with no executor offloading.
+      connect/send directly with no executor offloading.
   inject-websession:
     status: exempt
     comment: This integration does not make HTTP requests.

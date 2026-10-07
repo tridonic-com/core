@@ -20,7 +20,6 @@ from dali.gear.emergency import (
     StopTest,
 )
 from dali.gear.general import IdentifyDevice
-from dali.gear.sequences import EmergencyCommand
 
 from homeassistant.components.button import (
     ButtonDeviceClass,
@@ -275,8 +274,8 @@ class DaliEmergencyButton(CoordinatorEntity[DaliCoordinator], ButtonEntity):
     async def async_press(self) -> None:
         """Issue the emergency command, prefixed with ENABLE DEVICE TYPE 1."""
         try:
-            await self.coordinator.driver.run_sequence(
-                EmergencyCommand(self._address, self.entity_description.command)
+            await self.coordinator.driver.send(
+                self.entity_description.command(GearShort(self._address))
             )
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:
             raise HomeAssistantError(

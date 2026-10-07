@@ -38,7 +38,11 @@ from dali.exceptions import (
     MemoryLocationNotImplemented,
     ResponseError,
 )
-from dali.gear.colour import QueryColourValueDTR
+from dali.gear.colour import (
+    QueryColourStatus,
+    QueryColourTypeFeatures,
+    QueryColourValueDTR,
+)
 from dali.gear.general import (
     QueryActualLevel,
     QueryControlGearPresent,
@@ -49,13 +53,8 @@ from dali.gear.general import (
     QueryMissingShortAddress,
     QuerySystemFailureLevel,
 )
-from dali.gear.sequences import (
-    QueryDT6DimmingCurve,
-    QueryDT8ColourStatus,
-    QueryDT8ColourTypeFeatures,
-    QueryDT8ColourValue,
-    QueryEmergencyInformation,
-)
+from dali.gear.led import QueryDimmingCurve
+from dali.gear.sequences import QueryDT8ColourValue, QueryEmergencyInformation
 from dali.memory import emergency, info
 from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
@@ -457,7 +456,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 return None
             device_types = tuple(
                 device_type
-                for device_type in await self.driver.run_sequence(
+                for device_type in await self.driver.send(
                     QueryDeviceTypes(gear_address)
                 )
                 if device_type in SUPPORTED_GEAR_DEVICE_TYPES
@@ -471,9 +470,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 self._gear_config[address] = config
             linear_dimming = False
             if DEVICE_TYPE_LED in device_types:
-                curve = await self.driver.run_sequence(
-                    QueryDT6DimmingCurve(gear_address)
-                )
+                curve = await self.driver.send(QueryDimmingCurve(gear_address))
                 linear_dimming = (
                     curve is not None
                     and curve.raw_value is not None
@@ -487,61 +484,57 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             color_temp_max_mired = None
             xy_color = None
             if DEVICE_TYPE_COLOUR in device_types:
-                features = await self.driver.run_sequence(
-                    QueryDT8ColourTypeFeatures(gear_address)
-                )
+                features = await self.driver.send(QueryColourTypeFeatures(gear_address))
                 if features.raw_value is not None and not features.raw_value.error:
                     supports_color_temperature = features.Tc_capable
                     supports_xy = features.xy_capable
                 if supports_color_temperature and supports_xy:
-                    status = await self.driver.run_sequence(
-                        QueryDT8ColourStatus(gear_address)
-                    )
+                    status = await self.driver.send(QueryColourStatus(gear_address))
                     if status.raw_value is not None and not status.raw_value.error:
                         color_type_tc_active = (
                             status.colour_type_colour_temperature_Tc_active == 1
                         )
                 if supports_color_temperature:
-                    color_temp_mired = await self.driver.run_sequence(
+                    color_temp_mired = await self.driver.send(
                         QueryDT8ColourValue(
                             gear_address, QueryColourValueDTR.ColourTemperatureTC
                         )
                     )
                     # The gear only accepts values within its configured Tc
                     # limits; fall back to the physical limits when unset.
-                    color_temp_min_mired = await self.driver.run_sequence(
+                    color_temp_min_mired = await self.driver.send(
                         QueryDT8ColourValue(
                             gear_address,
                             QueryColourValueDTR.ColourTemperatureTcCoolest,
                         )
                     )
                     if color_temp_min_mired is None:
-                        color_temp_min_mired = await self.driver.run_sequence(
+                        color_temp_min_mired = await self.driver.send(
                             QueryDT8ColourValue(
                                 gear_address,
                                 QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest,
                             )
                         )
-                    color_temp_max_mired = await self.driver.run_sequence(
+                    color_temp_max_mired = await self.driver.send(
                         QueryDT8ColourValue(
                             gear_address,
                             QueryColourValueDTR.ColourTemperatureTcWarmest,
                         )
                     )
                     if color_temp_max_mired is None:
-                        color_temp_max_mired = await self.driver.run_sequence(
+                        color_temp_max_mired = await self.driver.send(
                             QueryDT8ColourValue(
                                 gear_address,
                                 QueryColourValueDTR.ColourTemperatureTcPhysicalWarmest,
                             )
                         )
                 if supports_xy:
-                    x = await self.driver.run_sequence(
+                    x = await self.driver.send(
                         QueryDT8ColourValue(
                             gear_address, QueryColourValueDTR.XCoordinate
                         )
                     )
-                    y = await self.driver.run_sequence(
+                    y = await self.driver.send(
                         QueryDT8ColourValue(
                             gear_address, QueryColourValueDTR.YCoordinate
                         )
@@ -640,11 +633,11 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         read entirely so the initial refresh is not held up by it; the periodic
         refresh fills the diagnostics in afterwards.
         """
-        info_ = await self.driver.run_sequence(QueryEmergencyInformation(gear_address))
+        info_ = await self.driver.send(QueryEmergencyInformation(gear_address))
         memory: dict[type, Any] = {}
         if not fast:
             try:
-                memory = await self.driver.run_sequence(
+                memory = await self.driver.send(
                     emergency.BANK_208.read_all(gear_address)
                 )
             except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
@@ -706,7 +699,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     async def _query_metadata(self, address: GearShort | DeviceShort) -> DaliDeviceData:
         """Read optional identification data from memory bank 0."""
         try:
-            values = await self.driver.run_sequence(info.BANK_0.read_all(address))
+            values = await self.driver.send(info.BANK_0.read_all(address))
         except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
             return DaliDeviceData()
 
@@ -861,7 +854,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         not held up; sensor metadata is still read as it defines the entity.
         """
         try:
-            await self.driver.run_sequence(self.driver.dev_inst_map.autodiscover())
+            await self.driver.send(self.driver.dev_inst_map.autodiscover())
         except (OSError, TimeoutError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -1031,7 +1024,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
 
     async def async_assign_gear_short_addresses(self) -> bool:
         """Address unaddressed control gear and return whether any remain unaddressed."""
-        await self.driver.run_sequence(
+        await self.driver.send(
             Commissioning(readdress=False), progress=_log_commissioning_progress
         )
         unaddressed = await self._has_unaddressed_gear()
@@ -1042,7 +1035,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
 
     async def async_assign_control_device_short_addresses(self) -> bool:
         """Address unaddressed control devices; return whether any remain unaddressed."""
-        await self.driver.run_sequence(
+        await self.driver.send(
             CommissionDevices(readdress=False), progress=_log_commissioning_progress
         )
         # Newly addressed devices only surface as entities once re-enumerated into

@@ -116,9 +116,7 @@ async def test_select_write_failure_raises_home_assistant_error(
     await _setup(hass, fake_dali_driver)
 
     with (
-        patch.object(
-            fake_dali_driver, "run_sequence", side_effect=OSError("serial failure")
-        ),
+        patch.object(fake_dali_driver, "send", side_effect=OSError("serial failure")),
         pytest.raises(HomeAssistantError),
     ):
         await hass.services.async_call(

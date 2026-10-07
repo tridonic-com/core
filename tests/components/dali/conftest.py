@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Generator
-from types import SimpleNamespace
+from types import GeneratorType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.command import Command
@@ -168,7 +168,23 @@ class FakeDaliDriver:
         """Return the fake DALI event queue."""
         return self.event_queue
 
-    async def send(self, command: Command) -> SimpleNamespace:
+    async def send(
+        self, msg: Command | Generator, *, priority: int = 5, progress=None
+    ) -> object:
+        """Return a response for a fake command, or run a fake sequence.
+
+        Mirrors the unified python-dali driver API: a bare command returns its
+        response, a generator sequence is driven to completion.
+        """
+        if isinstance(msg, GeneratorType):
+            return await self._run_sequence(msg, progress=progress)
+        return await self._send_command(msg)
+
+    async def run_sequence(self, sequence: Generator, progress=None) -> object:
+        """Run a fake sequence (deprecated alias kept for API parity)."""
+        return await self._run_sequence(sequence, progress=progress)
+
+    async def _send_command(self, command: Command) -> SimpleNamespace:
         """Return a response for a fake DALI command."""
         self.sent.append(command)
         if isinstance(command, DeviceDTR0):
@@ -217,9 +233,33 @@ class FakeDaliDriver:
                     error=False, as_integer=(multiplier << 4) | base
                 )
             )
+        if isinstance(command, QueryColourTypeFeatures):
+            features = self.color_features.get(address)
+            if features is None:
+                return SimpleNamespace(raw_value=None)
+            tc_capable, xy_capable = features
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(error=False),
+                Tc_capable=tc_capable,
+                xy_capable=xy_capable,
+            )
+        if isinstance(command, QueryColourStatus):
+            tc_active = self.color_tc_active.get(address, False)
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(error=False),
+                colour_type_colour_temperature_Tc_active=1 if tc_active else 0,
+            )
+        if isinstance(command, QueryDimmingCurve):
+            value = 1 if self.linear_dimming.get(address, False) else 0
+            return SimpleNamespace(raw_value=SimpleNamespace(as_integer=value))
+        if type(command).__module__ == "dali.gear.emergency":
+            command_name = type(command).__name__
+            self.emergency_commands.append((address, command_name))
+            self._apply_emergency_command(address, command_name)
+            return SimpleNamespace(value=None)
         return SimpleNamespace(value=None)
 
-    async def run_sequence(self, sequence, progress=None):
+    async def _run_sequence(self, sequence, progress=None):
         """Return a fake sequence response."""
         if sequence.__name__ == "autodiscover":
             sequence.close()
@@ -253,16 +293,6 @@ class FakeDaliDriver:
             )
             sequence.close()
             return EmergencyInformation(**self.emergency_info[address])
-        if sequence.__name__ == "EmergencyCommand":
-            frame_locals = sequence.gi_frame.f_locals
-            address = getattr(
-                frame_locals.get("address"), "address", frame_locals.get("address")
-            )
-            command_class = frame_locals.get("command_class")
-            sequence.close()
-            self.emergency_commands.append((address, command_class.__name__))
-            self._apply_emergency_command(address, command_class.__name__)
-            return None
         if sequence.__name__ == "set_dtr0_variable":
             frame_locals = sequence.gi_frame.f_locals
             address = getattr(
@@ -277,31 +307,6 @@ class FakeDaliDriver:
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
-        if isinstance(first_command, QueryColourTypeFeatures):
-            features = self.color_features.get(first_command.destination.address)
-            if features is None:
-                return SimpleNamespace(raw_value=None)
-            tc_capable, xy_capable = features
-            return SimpleNamespace(
-                raw_value=SimpleNamespace(error=False),
-                Tc_capable=tc_capable,
-                xy_capable=xy_capable,
-            )
-        if isinstance(first_command, QueryDimmingCurve):
-            value = (
-                1
-                if self.linear_dimming.get(first_command.destination.address, False)
-                else 0
-            )
-            return SimpleNamespace(raw_value=SimpleNamespace(as_integer=value))
-        if isinstance(first_command, QueryColourStatus):
-            tc_active = self.color_tc_active.get(
-                first_command.destination.address, False
-            )
-            return SimpleNamespace(
-                raw_value=SimpleNamespace(error=False),
-                colour_type_colour_temperature_Tc_active=1 if tc_active else 0,
-            )
         if isinstance(first_command, QueryActualLevel):
             dtr_command = next(sequence)
             assert isinstance(dtr_command, DTR0)
