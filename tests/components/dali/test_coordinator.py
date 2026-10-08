@@ -1,5 +1,6 @@
 """Test the Tridonic DALI coordinator."""
 
+from collections.abc import Callable
 from dataclasses import astuple
 from types import GeneratorType, SimpleNamespace
 from typing import Any
@@ -18,12 +19,19 @@ from dali.exceptions import DALISequenceError
 from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import QueryControlGearPresent, QueryFadeTimeFadeRate
 from dali.gear.led import QueryDimmingCurve
-from dali.memory import info
+from dali.memory import (
+    diagnostics as diagnostics_memory,
+    emergency as emergency_memory,
+    info,
+    oem,
+)
+from dali.memory.location import FlagValue
 from dali.sequences import progress
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
+    DIAGNOSTICS_SCAN_INTERVAL,
     DaliCoordinator,
     DaliGearData,
     _dali_level_to_brightness,
@@ -200,7 +208,7 @@ async def test_metadata_cache_is_restored(
     """Test persisted identification data is reused instead of re-read."""
     entry = MockConfigEntry(domain=DOMAIN)
     hass_storage[f"{DOMAIN}.{entry.entry_id}_metadata"] = {
-        "version": 2,
+        "version": 3,
         "data": {
             "gear": {
                 "0": {
@@ -213,6 +221,8 @@ async def test_metadata_cache_is_restored(
                 }
             },
             "device": {"3": {"identification_number": 11}},
+            "luminaire": {"0": {"luminaire_identification": "Office downlight"}},
+            "maintenance": {"0": {"rated_median_useful_life": 50000}},
             "sensor": {"3:0": {"quantity_name": 1, "resolution": 9}},
         },
     }
@@ -222,6 +232,8 @@ async def test_metadata_cache_is_restored(
 
     assert coordinator._metadata[0].gtin == 42
     assert coordinator._device_metadata[3].identification_number == 11
+    assert coordinator._luminaire[0].luminaire_identification == "Office downlight"
+    assert coordinator._maintenance[0].rated_median_useful_life == 50000
     assert coordinator.input_devices[(3, 0)].resolution == 9
     # The fast initial pass serves the cached value without a bank-0 read, so
     # the gear keeps the restored GTIN rather than the one the bus would report.
@@ -230,19 +242,23 @@ async def test_metadata_cache_is_restored(
     assert gear.gtin == 42
 
 
+@pytest.mark.parametrize("version", [1, 2], ids=["version_1", "version_2"])
 async def test_outdated_metadata_cache_is_discarded(
     hass: HomeAssistant,
     fake_dali_driver: FakeDaliDriver,
     hass_storage: dict[str, Any],
+    version: int,
 ) -> None:
-    """Test a cache from before the bank 0 decoding changed is dropped.
+    """Test a cache written before the stored fields changed is dropped.
 
-    Its firmware versions carry the old format and it has no serial or batch
-    number, and nothing re-reads a device whose metadata is already cached.
+    Version 1 firmware versions carry the old format and have no serial or
+    batch number, and version 2 predates the last memory bank the extended
+    bank reads are gated on. Nothing re-reads a device that is already cached,
+    so a stale entry would never be corrected.
     """
     entry = MockConfigEntry(domain=DOMAIN)
     hass_storage[f"{DOMAIN}.{entry.entry_id}_metadata"] = {
-        "version": 1,
+        "version": version,
         "data": {"gear": {"0": {"gtin": 42, "firmware_version": "9.9"}}},
     }
     coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
@@ -590,15 +606,27 @@ async def test_device_info_uses_gtin_as_model_id(
     assert device_info["model_id"] == "1234567654321"
 
 
-async def test_device_info_uses_the_printed_serial_number(
+@pytest.mark.parametrize(
+    ("serial_no", "batch_no", "expected_serial_number"),
+    [
+        pytest.param("080706", "0504030201", "0504030201-080706", id="both"),
+        pytest.param("080706", None, "080706", id="serial_only"),
+        pytest.param(None, "0504030201", "0504030201", id="batch_only"),
+        pytest.param(None, None, None, id="neither"),
+    ],
+)
+async def test_device_info_joins_the_batch_and_serial_number(
     coordinator: DaliCoordinator,
+    serial_no: str | None,
+    batch_no: str | None,
+    expected_serial_number: str | None,
 ) -> None:
-    """Test the serial number is the one printed on the device, not the raw value."""
-    coordinator.data = {5: DaliGearData(serial_no="080706", batch_no="0504030201")}
+    """Test the registry's single serial number field carries both halves."""
+    coordinator.data = {5: DaliGearData(serial_no=serial_no, batch_no=batch_no)}
 
     device_info = coordinator.device_info("entry", "USB-DALI2", 5)
 
-    assert device_info["serial_number"] == "080706"
+    assert device_info["serial_number"] == expected_serial_number
 
 
 @pytest.mark.parametrize(
@@ -946,3 +974,204 @@ async def test_gear_config_cache_is_pruned_on_full_scan(
     await coordinator._async_update_data()
 
     assert 0 not in coordinator._gear_config
+
+
+def _count_bank_reads(
+    driver: FakeDaliDriver, bank_address: int, gear_address: int = 0
+) -> Callable[[], int]:
+    """Return a counter of the reads of one memory bank of one gear.
+
+    Memory banks are read through a sequence rather than a single command, so
+    they leave no trace in the recorded command list.
+    """
+    original_send = driver.send
+    reads = 0
+
+    def _is_read(msg: object) -> bool:
+        if not isinstance(msg, GeneratorType) or msg.__name__ != "read_all":
+            return False
+        frame_locals = msg.gi_frame.f_locals
+        addr = frame_locals["addr"]
+        return (
+            frame_locals["self"].address == bank_address
+            and getattr(addr, "address", addr) == gear_address
+        )
+
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
+        nonlocal reads
+        if _is_read(msg):
+            reads += 1
+        return await original_send(msg, priority=priority, progress=progress)
+
+    driver.send = send  # type: ignore[method-assign]
+    return lambda: reads
+
+
+async def _refresh_through_enrichment(coordinator: DaliCoordinator) -> None:
+    """Run the refresh sequence the integration performs when it is set up.
+
+    The first pass is the fast one that skips every slow memory bank read;
+    enrichment then reads the static banks and refreshes again behind them.
+    """
+    await coordinator.async_refresh()
+    await coordinator.async_enrich_deferred_data()
+
+
+async def test_extended_memory_banks_are_decoded(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test the DiiA Part 251, 252 and 253 banks reach the gear data."""
+    await _refresh_through_enrichment(coordinator)
+
+    gear = coordinator.data[0]
+    assert gear.luminaire is not None
+    assert gear.luminaire.manufacturer_gtin == 4048879000000
+    assert gear.luminaire.cri == 90
+    assert gear.luminaire.luminaire_identification == "Office downlight"
+    assert gear.maintenance is not None
+    assert gear.maintenance.rated_median_useful_life == 50000
+    assert gear.diagnostics is not None
+    assert gear.diagnostics.control_gear_start_counter == 120
+    assert gear.diagnostics.control_gear_thermal_derating is True
+    assert gear.diagnostics.light_source_temperature == 52
+    # The scaled values arrive as Decimals and must not stay Decimals: neither
+    # the metadata store nor the diagnostics dump can serialize them.
+    assert gear.diagnostics.control_gear_external_supply_voltage == 230.5
+    assert isinstance(gear.diagnostics.control_gear_external_supply_voltage, float)
+    assert gear.active_energy == 1234.5
+
+
+async def test_gear_without_the_extended_banks_reports_nothing(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test a gear answering no extended bank leaves every field unset."""
+    await _refresh_through_enrichment(coordinator)
+
+    gear = coordinator.data[1]
+    assert gear.luminaire is None
+    assert gear.maintenance is None
+    assert gear.diagnostics is None
+    assert gear.active_energy is None
+
+
+async def test_bank_1_without_the_part_251_extension(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test only the two IEC 62386-102 values are taken without Part 251.
+
+    The remaining locations of the bank are whatever the OEM stored there when
+    the content format identifier does not declare the extension.
+    """
+    fake_dali_driver.bank_memory[1][0][oem.ContentFormatID] = 0x0001
+
+    await _refresh_through_enrichment(coordinator)
+
+    luminaire = coordinator.data[0].luminaire
+    assert luminaire is not None
+    assert luminaire.manufacturer_gtin == 4048879000000
+    assert luminaire.luminaire_id == 77
+    assert luminaire.cri is None
+    assert luminaire.luminaire_identification is None
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [FlagValue.MASK, FlagValue.TMASK],
+    ids=["mask", "tmask"],
+)
+async def test_unavailable_memory_values_are_dropped(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver, flag: FlagValue
+) -> None:
+    """Test a bank answering MASK or TMASK reports no reading at all.
+
+    Both flags are enum members that would otherwise end up verbatim in an
+    entity state, so they are checked on the emergency bank too.
+    """
+    fake_dali_driver.bank_memory[205][0][diagnostics_memory.ControlGearTemperature] = (
+        flag
+    )
+    fake_dali_driver.emergency_memory[1][emergency_memory.ControlGearTemperature] = flag
+
+    await _refresh_through_enrichment(coordinator)
+
+    diagnostics = coordinator.data[0].diagnostics
+    assert diagnostics is not None
+    assert diagnostics.control_gear_internal_temperature is None
+    emergency = coordinator.data[1].emergency
+    assert emergency is not None
+    assert emergency.control_gear_temperature is None
+
+
+async def test_last_memory_bank_rules_out_the_extended_banks(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a gear reporting a low last memory bank is not read any further."""
+    fake_dali_driver.metadata[info.LastMemoryBank] = 0
+    reads = _count_bank_reads(fake_dali_driver, 205)
+
+    await _refresh_through_enrichment(coordinator)
+
+    assert reads() == 0
+    assert coordinator.data[0].diagnostics is None
+    assert coordinator.data[0].luminaire is None
+
+
+async def test_volatile_banks_are_read_on_their_own_interval(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the Part 252 and 253 banks are not re-read on every poll."""
+    reads = _count_bank_reads(fake_dali_driver, 205)
+
+    await coordinator.async_refresh()
+    assert reads() == 0
+
+    await coordinator.async_refresh()
+    assert reads() == 1
+
+    await coordinator.async_refresh()
+    assert reads() == 1
+
+    coordinator._last_diagnostics_scan -= DIAGNOSTICS_SCAN_INTERVAL.total_seconds()
+    await coordinator.async_refresh()
+    assert reads() == 2
+
+
+async def test_static_banks_are_read_once(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the luminaire bank is not re-read for a gear already cached."""
+    reads = _count_bank_reads(fake_dali_driver, 1)
+
+    await _refresh_through_enrichment(coordinator)
+    assert reads() == 1
+
+    await coordinator.async_enrich_deferred_data()
+    assert reads() == 1
+
+
+async def test_diagnostics_caches_are_pruned_on_full_scan(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a re-addressed gear cannot inherit the previous occupant's readings."""
+    await _refresh_through_enrichment(coordinator)
+    assert 0 in coordinator._diagnostics
+    assert 0 in coordinator._energy
+
+    del fake_dali_driver.gears[0]
+    coordinator._last_full_scan = None
+    await coordinator.async_refresh()
+
+    assert 0 not in coordinator._diagnostics
+    assert 0 not in coordinator._energy
+
+
+async def test_static_bank_values_are_persisted(coordinator: DaliCoordinator) -> None:
+    """Test the luminaire and maintenance banks survive a restart."""
+    await _refresh_through_enrichment(coordinator)
+
+    stored = coordinator._metadata_snapshot()
+
+    assert stored["luminaire"]["0"]["luminaire_identification"] == "Office downlight"
+    assert stored["maintenance"]["0"]["rated_median_useful_life"] == 50000

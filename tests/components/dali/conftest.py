@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Generator
 from dataclasses import fields
+from decimal import Decimal
 from types import GeneratorType, SimpleNamespace
 from typing import TypeVar
 from unittest.mock import AsyncMock, patch
@@ -21,6 +22,7 @@ from dali.device.general_sensor import (
     QueryMeasurementVariable,
     UnitOfMeasurement,
 )
+from dali.exceptions import MemoryLocationNotImplemented
 from dali.gear.colour import (
     QueryColourStatus,
     QueryColourTypeFeatures,
@@ -46,7 +48,14 @@ from dali.gear.sequences import (
     EmergencyMode,
     EmergencyStatus,
 )
-from dali.memory import emergency as emergency_memory, info
+from dali.memory import (
+    diagnostics as diagnostics_memory,
+    emergency as emergency_memory,
+    energy,
+    info,
+    maintenance,
+    oem,
+)
 import pytest
 
 _StatusByte = TypeVar("_StatusByte")
@@ -122,6 +131,7 @@ class FakeDaliDriver:
             info.IdentificationNumber: 1,
             info.FirmwareVersion: "1.0",
             info.HardwareVersion: "2.1",
+            info.LastMemoryBank: 207,
         }
         self._transport = SimpleNamespace(close=self._close)
         self.dev_inst_map = FakeDevInstMap()
@@ -172,6 +182,73 @@ class FakeDaliDriver:
                 emergency_memory.FunctionTestFailedCounterTotal: 0,
                 emergency_memory.DurationTestFailedCounterTotal: 0,
             }
+        }
+        # Every memory bank other than bank 0, keyed bank, then gear address;
+        # a gear missing from a bank's entry does not implement that bank.
+        self.bank_memory: dict[int, dict[int, dict[object, object]]] = {
+            1: {
+                0: {
+                    oem.ManufacturerGTIN: 4048879000000,
+                    oem.LuminaireID: 77,
+                    oem.ContentFormatID: 0x0003,
+                    oem.YearOfManufacture: 21,
+                    oem.WeekOfManufacture: 35,
+                    oem.InputPowerNominal: 42,
+                    oem.InputPowerMinimumDim: 5,
+                    oem.MainsVoltageMinimum: 198,
+                    oem.MainsVoltageMaximum: 264,
+                    oem.LightOutputNominal: 3600,
+                    oem.CRI: 90,
+                    oem.CCT: 4000,
+                    oem.LightDistributionType: "Type III",
+                    oem.LuminaireColor: "white",
+                    oem.LuminaireIdentification: "Office downlight",
+                }
+            },
+            202: {0: {energy.ActiveEnergy: Decimal("1234.5")}},
+            205: {
+                0: {
+                    diagnostics_memory.ControlGearOperatingTime: 360000,
+                    diagnostics_memory.ControlGearStartCounter: 120,
+                    diagnostics_memory.ControlGearExternalSupplyVoltage: Decimal(
+                        "230.5"
+                    ),
+                    diagnostics_memory.ControlGearExternalSupplyVoltageFrequency: 50,
+                    diagnostics_memory.ControlGearPowerFactor: Decimal("0.95"),
+                    diagnostics_memory.ControlGearTemperature: 45,
+                    diagnostics_memory.ControlGearOutputCurrentPercent: 80,
+                    diagnostics_memory.ControlGearOverallFailureCondition: False,
+                    diagnostics_memory.ControlGearExternalSupplyUndervoltage: False,
+                    diagnostics_memory.ControlGearExternalSupplyOvervoltage: False,
+                    diagnostics_memory.ControlGearOutputPowerLimitation: False,
+                    diagnostics_memory.ControlGearThermalDerating: True,
+                    diagnostics_memory.ControlGearThermalShutdown: False,
+                }
+            },
+            206: {
+                0: {
+                    diagnostics_memory.LightSourceStartCounterResettable: 12,
+                    diagnostics_memory.LightSourceStartCounter: 118,
+                    diagnostics_memory.LightSourceOnTimeResettable: 7200,
+                    diagnostics_memory.LightSourceOnTime: 352800,
+                    diagnostics_memory.LightSourceVoltage: Decimal("38.4"),
+                    diagnostics_memory.LightSourceCurrent: Decimal("0.35"),
+                    diagnostics_memory.LightSourceTemperature: 52,
+                    diagnostics_memory.LightSourceOverallFailureCondition: False,
+                    diagnostics_memory.LightSourceShortCircuit: False,
+                    diagnostics_memory.LightSourceOpenCircuit: False,
+                    diagnostics_memory.LightSourceThermalDerating: False,
+                    diagnostics_memory.LightSourceThermalShutdown: False,
+                }
+            },
+            207: {
+                0: {
+                    maintenance.RatedMedianUsefulLifeOfLuminaire: 50000,
+                    maintenance.InternalControlGearReferenceTemperature: 65,
+                    maintenance.RatedMedianUsefulLightSourceStarts: 50000,
+                }
+            },
+            208: self.emergency_memory,
         }
         self.emergency_commands: list[tuple[int, str]] = []
         self.unaddressed_gears: list[tuple[int, ...]] = []
@@ -304,9 +381,13 @@ class FakeDaliDriver:
             addr = frame_locals.get("addr")
             address = getattr(addr, "address", addr)
             sequence.close()
-            if getattr(bank, "address", None) == 208:
-                return dict(self.emergency_memory.get(address, {}))
-            return self.metadata
+            bank_address = getattr(bank, "address", None)
+            if bank_address == 0:
+                return self.metadata
+            values = self.bank_memory.get(bank_address, {})
+            if address not in values:
+                raise MemoryLocationNotImplemented
+            return dict(values[address])
         if sequence.__name__ == "QueryEmergencyInformation":
             frame_locals = sequence.gi_frame.f_locals
             address = getattr(
