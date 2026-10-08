@@ -99,7 +99,9 @@ class FakeDaliDriver:
     def __init__(self, uri: str) -> None:
         """Initialize the fake driver."""
         self.uri = uri
-        self.connected = False
+        # Models an interface that is plugged in; tests that need it to go away
+        # clear this, as python-dali does when the serial transport is lost.
+        self.connected = True
         self.closed = False
         self.sent: list[Command] = []
         self.gears = {0: (6,), 1: (1,), 2: (8,)}
@@ -261,6 +263,11 @@ class FakeDaliDriver:
     async def connect(self, *, scan_dev_inst: bool = False) -> None:
         """Connect to the fake interface."""
         self.connected = True
+
+    @property
+    def is_connected(self) -> bool:
+        """Return whether the fake interface is still reachable."""
+        return self.connected
 
     def new_dali_rx_queue(self) -> asyncio.Queue[object]:
         """Return the fake DALI event queue."""
@@ -491,6 +498,7 @@ class FakeDaliDriver:
     def _close(self) -> None:
         """Close the fake transport."""
         self.closed = True
+        self.connected = False
 
 
 @pytest.fixture

@@ -4,6 +4,7 @@ from types import GeneratorType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dali.exceptions import DALISequenceError, TransmissionError
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 
 from homeassistant.components.dali import async_remove_config_entry_device
@@ -12,13 +13,15 @@ from homeassistant.components.dali.const import (
     DOMAIN,
     bus_voltage_error_issue_id,
 )
+from homeassistant.components.dali.coordinator import SCAN_INTERVAL
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .conftest import FakeDaliDriver
 
-from tests.common import MockConfigEntry
+from tests.common import MockConfigEntry, async_fire_time_changed
 
 
 async def test_setup_and_unload_entry(
@@ -198,6 +201,64 @@ async def test_setup_entry_refresh_failure(
         assert not await hass.config_entries.async_setup(entry.entry_id)
 
     assert fake_dali_driver.closed
+
+
+async def test_lost_interface_is_reconnected(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test a replugged interface is reconnected and the bus scanned again."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        # The interface is unplugged, so its serial transport goes away.
+        fake_dali_driver.connected = False
+        freezer.tick(SCAN_INTERVAL)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert fake_dali_driver.is_connected
+    assert entry.runtime_data.data.keys() == {0, 1, 2}
+
+
+async def test_lost_interface_retries_while_it_stays_away(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test the entry retries in the background while the interface is gone."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        fake_dali_driver.connected = False
+        with patch.object(
+            fake_dali_driver, "connect", side_effect=OSError("unplugged")
+        ):
+            freezer.tick(SCAN_INTERVAL)
+            async_fire_time_changed(hass)
+            await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
 async def test_setup_entry_dali_sequence_failure(

@@ -1307,6 +1307,16 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         The extended diagnostics banks are slower still and get an interval of
         their own, so a bus full of gear cannot stall the light-state poll.
         """
+        if not self.driver.is_connected:
+            # The interface is gone, typically unplugged. Reloading opens the
+            # serial port again and rescans the bus; while the interface stays
+            # away the entry retries in the background instead, and a replug is
+            # picked up straight away by USB discovery.
+            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="connection_lost",
+            )
         fast = self._initial_refresh
         now = self.hass.loop.time()
         full_scan = (

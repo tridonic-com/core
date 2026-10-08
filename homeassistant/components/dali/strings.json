@@ -455,6 +455,9 @@
     "communication_error": {
       "message": "Unable to communicate with the DALI gear"
     },
+    "connection_lost": {
+      "message": "The connection to the DALI interface was lost"
+    },
     "update_failed": {
       "message": "Unable to communicate with the DALI interface"
     }
