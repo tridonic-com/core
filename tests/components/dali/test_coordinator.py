@@ -1,5 +1,6 @@
 """Test the Tridonic DALI coordinator."""
 
+from dataclasses import astuple
 from types import GeneratorType, SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -178,7 +179,8 @@ async def test_initial_refresh_defers_slow_memory_reads(
     assert coordinator._metadata == {}
     # Emergency status is read, but the slow bank-208 diagnostics are deferred.
     assert data[1].emergency is not None
-    assert data[1].emergency.status == 0b00001000
+    assert data[1].emergency.status is not None
+    assert data[1].emergency.status.battery_fully_charged
     assert data[1].emergency.control_gear_temperature is None
 
     # A later full refresh reads the deferred data.
@@ -339,10 +341,13 @@ async def test_emergency_information_is_decoded(
     assert gear is not None
     assert gear.emergency is not None
     emergency = gear.emergency
-    assert emergency.mode == 0b00000010
-    assert emergency.features == 0b00000001
-    assert emergency.status == 0b00001000
-    assert emergency.failure_status == 0x00
+    assert emergency.mode is not None and emergency.mode.normal_mode
+    assert emergency.features is not None
+    assert emergency.features.integral_emergency_control_gear
+    assert not emergency.features.maintained_control_gear
+    assert emergency.status is not None and emergency.status.battery_fully_charged
+    assert emergency.failure_status is not None
+    assert not any(astuple(emergency.failure_status))
     assert emergency.battery_charge == 254
     assert emergency.emergency_level == 254
     assert emergency.duration_test_result == 60

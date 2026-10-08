@@ -2,7 +2,9 @@
 
 import asyncio
 from collections.abc import Generator
+from dataclasses import fields
 from types import GeneratorType, SimpleNamespace
+from typing import TypeVar
 from unittest.mock import AsyncMock, patch
 
 from dali.command import Command
@@ -37,9 +39,28 @@ from dali.gear.general import (
     QuerySystemFailureLevel,
 )
 from dali.gear.led import QueryDimmingCurve
-from dali.gear.sequences import EmergencyInformation
+from dali.gear.sequences import (
+    EmergencyFailureStatus,
+    EmergencyFeatures,
+    EmergencyInformation,
+    EmergencyMode,
+    EmergencyStatus,
+)
 from dali.memory import emergency as emergency_memory, info
 import pytest
+
+_StatusByte = TypeVar("_StatusByte")
+
+
+def decode_status(cls: type[_StatusByte], byte: int) -> _StatusByte:
+    """Decode a raw status byte into a python-dali status dataclass.
+
+    Mirrors how python-dali decodes the DT1 status bytes: the dataclass fields
+    are declared least-significant bit first.
+    """
+    return cls(
+        **{field.name: bool(byte & (1 << pos)) for pos, field in enumerate(fields(cls))}
+    )
 
 
 @pytest.fixture
@@ -292,7 +313,22 @@ class FakeDaliDriver:
                 frame_locals.get("address"), "address", frame_locals.get("address")
             )
             sequence.close()
-            return EmergencyInformation(**self.emergency_info[address])
+            info_ = dict(self.emergency_info[address])
+            return EmergencyInformation(
+                emergency_mode=decode_status(
+                    EmergencyMode, info_.pop("emergency_mode")
+                ),
+                emergency_features=decode_status(
+                    EmergencyFeatures, info_.pop("emergency_features")
+                ),
+                emergency_failure_status=decode_status(
+                    EmergencyFailureStatus, info_.pop("emergency_failure_status")
+                ),
+                emergency_status=decode_status(
+                    EmergencyStatus, info_.pop("emergency_status")
+                ),
+                **info_,
+            )
         if sequence.__name__ == "set_dtr0_variable":
             frame_locals = sequence.gi_frame.f_locals
             address = getattr(

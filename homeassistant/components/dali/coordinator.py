@@ -54,7 +54,14 @@ from dali.gear.general import (
     QuerySystemFailureLevel,
 )
 from dali.gear.led import QueryDimmingCurve
-from dali.gear.sequences import QueryDT8ColourValue, QueryEmergencyInformation
+from dali.gear.sequences import (
+    EmergencyFailureStatus,
+    EmergencyFeatures,
+    EmergencyMode,
+    EmergencyStatus,
+    QueryDT8ColourValue,
+    QueryEmergencyInformation,
+)
 from dali.memory import emergency, info
 from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
@@ -118,16 +125,16 @@ class DaliDeviceData:
 class DaliEmergencyData:
     """Status and measurement data for one DT1 (IEC 62386-202) emergency gear.
 
-    The four status bytes are kept raw so entities can expose individual bits;
-    the measurement values are plain integers as reported by the gear (None
-    where the gear answers MASK or does not answer). The remaining fields are
-    the memory-bank-208 diagnostics.
+    The four status bytes are decoded into their named bits by python-dali; the
+    measurement values are plain integers as reported by the gear (None where
+    the gear answers MASK or does not answer). The remaining fields are the
+    memory-bank-208 diagnostics.
     """
 
-    mode: int | None = None
-    features: int | None = None
-    failure_status: int | None = None
-    status: int | None = None
+    mode: EmergencyMode | None = None
+    features: EmergencyFeatures | None = None
+    failure_status: EmergencyFailureStatus | None = None
+    status: EmergencyStatus | None = None
     battery_charge: int | None = None
     emergency_level: int | None = None
     duration_test_result: int | None = None
@@ -161,7 +168,10 @@ class DaliEmergencyData:
         maintained gear keeps the lamp lit from the mains and so behaves as a
         dimmable light, whereas a non-maintained gear only lights in emergency.
         """
-        return self.features is not None and bool(self.features & 0b110)
+        return self.features is not None and (
+            self.features.maintained_control_gear
+            or self.features.switched_maintained_control_gear
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from dali.gear.sequences import EmergencyMode, EmergencyStatus
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
@@ -19,7 +20,7 @@ from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .conftest import FakeDaliDriver
+from .conftest import FakeDaliDriver, decode_status
 
 from tests.common import MockConfigEntry
 
@@ -35,13 +36,41 @@ def _sensor(
 @pytest.mark.parametrize(
     ("mode", "status", "expected"),
     [
-        (0b00000010, 0b00000000, "normal"),
-        (0b00000100, 0b00000000, "emergency"),
-        (0b00001000, 0b00000000, "extended_emergency"),
-        (0b00000001, 0b00000000, "rest"),
-        (0b00010000, 0b00000000, "function_test"),
-        (0b00100000, 0b00000000, "duration_test"),
-        (0b00000010, 0b00000001, "inhibit"),
+        (
+            decode_status(EmergencyMode, 0b00000010),
+            decode_status(EmergencyStatus, 0),
+            "normal",
+        ),
+        (
+            decode_status(EmergencyMode, 0b00000100),
+            decode_status(EmergencyStatus, 0),
+            "emergency",
+        ),
+        (
+            decode_status(EmergencyMode, 0b00001000),
+            decode_status(EmergencyStatus, 0),
+            "extended_emergency",
+        ),
+        (
+            decode_status(EmergencyMode, 0b00000001),
+            decode_status(EmergencyStatus, 0),
+            "rest",
+        ),
+        (
+            decode_status(EmergencyMode, 0b00010000),
+            decode_status(EmergencyStatus, 0),
+            "function_test",
+        ),
+        (
+            decode_status(EmergencyMode, 0b00100000),
+            decode_status(EmergencyStatus, 0),
+            "duration_test",
+        ),
+        (
+            decode_status(EmergencyMode, 0b00000010),
+            decode_status(EmergencyStatus, 0b00000001),
+            "inhibit",
+        ),
         (None, None, None),
     ],
     ids=[
@@ -56,7 +85,7 @@ def _sensor(
     ],
 )
 def test_emergency_mode_decoding(
-    mode: int | None, status: int | None, expected: str | None
+    mode: EmergencyMode | None, status: EmergencyStatus | None, expected: str | None
 ) -> None:
     """Test the operating mode is derived from the mode and status bytes."""
     data = DaliEmergencyData(mode=mode, status=status)

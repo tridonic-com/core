@@ -63,17 +63,17 @@ def _emergency_mode(data: DaliEmergencyData) -> str | None:
     mode = data.mode
     if mode is None:
         return None
-    if mode & 0b00000100:
+    if mode.emergency_mode:
         return "emergency"
-    if mode & 0b00001000:
+    if mode.extended_emergency_mode:
         return "extended_emergency"
-    if mode & 0b00000001:
+    if mode.rest_mode:
         return "rest"
-    if mode & 0b00010000:
+    if mode.function_test:
         return "function_test"
-    if mode & 0b00100000:
+    if mode.duration_test:
         return "duration_test"
-    if data.status is not None and data.status & 0b00000001:
+    if data.status is not None and data.status.inhibit_mode:
         return "inhibit"
     return "normal"
 

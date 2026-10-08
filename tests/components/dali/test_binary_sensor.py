@@ -2,13 +2,14 @@
 
 from unittest.mock import patch
 
+from dali.gear.sequences import EmergencyFailureStatus, EmergencyMode, EmergencyStatus
 import pytest
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.dali.binary_sensor import (
     EMERGENCY_BINARY_SENSOR_TYPES,
     DaliEmergencyBinarySensor,
-    _bit,
+    _status_bit,
 )
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
@@ -19,7 +20,7 @@ from homeassistant.components.dali.coordinator import (
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
 
-from .conftest import FakeDaliDriver
+from .conftest import FakeDaliDriver, decode_status
 
 from tests.common import MockConfigEntry
 
@@ -35,48 +36,84 @@ def _binary_sensor(
 
 
 @pytest.mark.parametrize(
-    ("byte", "mask", "expected"),
+    ("byte", "attr", "expected"),
     [
-        (0b00001000, 0b00001000, True),
-        (0b00000000, 0b00001000, False),
-        (None, 0b1, None),
+        (decode_status(EmergencyStatus, 0b00001000), "battery_fully_charged", True),
+        (decode_status(EmergencyStatus, 0b00000000), "battery_fully_charged", False),
+        (None, "battery_fully_charged", None),
     ],
     ids=["set", "clear", "no_byte"],
 )
-def test_bit_helper(byte: int | None, mask: int, expected: bool | None) -> None:
-    """Test the bit helper reports set, clear and absent bytes."""
-    assert _bit(byte, mask) is expected
+def test_status_bit_helper(
+    byte: EmergencyStatus | None, attr: str, expected: bool | None
+) -> None:
+    """Test the status-bit helper reports set, clear and absent bytes."""
+    value_fn = _status_bit(lambda data: byte, attr)
+    assert value_fn(DaliEmergencyData()) is expected
 
 
 @pytest.mark.parametrize(
-    ("key", "field", "value", "expected"),
+    ("key", "emergency", "expected"),
     [
-        ("battery_fully_charged", "status", 0b00001000, True),
-        ("inhibit_mode", "status", 0b00001000, False),
-        ("function_test_done", "status", 0b00000010, True),
-        ("hardwired_switch_on", "mode", 0b10000000, True),
-        ("hardwired_inhibit_active", "mode", 0b00000010, False),
-        ("circuit_failure", "failure_status", 0b00000001, True),
-        ("duration_test_failed", "failure_status", 0b10000000, True),
-        ("battery_failure", "failure_status", 0b00000000, False),
+        (
+            "battery_fully_charged",
+            DaliEmergencyData(status=decode_status(EmergencyStatus, 0b00001000)),
+            True,
+        ),
+        (
+            "inhibit_mode",
+            DaliEmergencyData(status=decode_status(EmergencyStatus, 0b00001000)),
+            False,
+        ),
+        (
+            "function_test_done",
+            DaliEmergencyData(status=decode_status(EmergencyStatus, 0b00000010)),
+            True,
+        ),
+        (
+            "hardwired_switch_on",
+            DaliEmergencyData(mode=decode_status(EmergencyMode, 0b10000000)),
+            True,
+        ),
+        (
+            "hardwired_inhibit_active",
+            DaliEmergencyData(mode=decode_status(EmergencyMode, 0b00000010)),
+            False,
+        ),
+        (
+            "circuit_failure",
+            DaliEmergencyData(
+                failure_status=decode_status(EmergencyFailureStatus, 0b00000001)
+            ),
+            True,
+        ),
+        (
+            "duration_test_failed",
+            DaliEmergencyData(
+                failure_status=decode_status(EmergencyFailureStatus, 0b10000000)
+            ),
+            True,
+        ),
+        (
+            "battery_failure",
+            DaliEmergencyData(
+                failure_status=decode_status(EmergencyFailureStatus, 0b00000000)
+            ),
+            False,
+        ),
     ],
 )
 def test_emergency_binary_sensor_is_on(
     hass: HomeAssistant,
     fake_dali_driver: FakeDaliDriver,
     key: str,
-    field: str,
-    value: int,
+    emergency: DaliEmergencyData,
     expected: bool,
 ) -> None:
     """Test each bit entity reflects the right bit of the right status byte."""
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
     coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
-    coordinator.data = {
-        1: DaliGearData(
-            device_types=(1,), emergency=DaliEmergencyData(**{field: value})
-        )
-    }
+    coordinator.data = {1: DaliGearData(device_types=(1,), emergency=emergency)}
     sensor = _binary_sensor(coordinator, key)
 
     assert sensor.available
