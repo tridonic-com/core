@@ -8,7 +8,7 @@
   "integration_type": "hub",
   "iot_class": "local_polling",
   "quality_scale": "gold",
-  "requirements": ["python-dali==0.12", "serialx==1.10.0"],
+  "requirements": ["python-dali==0.12", "serialx==1.11.0"],
   "usb": [
     {
       "pid": "0201",
