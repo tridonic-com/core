@@ -11,6 +11,7 @@ from homeassistant.components.dali import async_remove_config_entry_device
 from homeassistant.components.dali.const import (
     CONF_BUS_POWER,
     DOMAIN,
+    bus_overload_issue_id,
     bus_voltage_error_issue_id,
 )
 from homeassistant.components.dali.coordinator import SCAN_INTERVAL
@@ -124,12 +125,17 @@ async def test_setup_bus_voltage_error_creates_repair(
     )
 
 
-async def test_setup_bus_voltage_error_with_bus_power_no_repair(
+async def test_setup_bus_voltage_error_with_bus_power_raises_overload(
     hass: HomeAssistant,
     fake_dali_driver: FakeDaliDriver,
     issue_registry: ir.IssueRegistry,
 ) -> None:
-    """Test no repair is offered when the interface already powers the bus."""
+    """Test a sagging bus with the supply on raises an overload repair.
+
+    A bus-voltage error while the interface already powers the bus means the
+    supply cannot hold the bus up under load, so the non-fixable overload
+    repair is raised instead of the fixable switch-on-power one.
+    """
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: True}
     )
@@ -146,6 +152,11 @@ async def test_setup_bus_voltage_error_with_bus_power_no_repair(
     assert not issue_registry.async_get_issue(
         DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
     )
+    overload = issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
+    assert overload is not None
+    assert overload.is_fixable is False
 
 
 async def test_setup_clears_stale_bus_voltage_repair(

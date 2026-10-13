@@ -463,6 +463,10 @@
     }
   },
   "issues": {
+    "bus_overload": {
+      "description": "The DALI bus on {title} dropped below the voltage needed to communicate, even though its power supply is switched on. The bus power supply is most likely overloaded or undersized for the connected control gear and sensors. A long or faulty bus cable can have the same effect.\n\nUse a DALI bus power supply with a higher current rating, reduce the number of devices on the bus, or check the bus wiring. Home Assistant keeps retrying and clears this issue once the bus is stable again.",
+      "title": "DALI bus power supply overloaded on {title}"
+    },
     "bus_voltage_error": {
       "fix_flow": {
         "step": {

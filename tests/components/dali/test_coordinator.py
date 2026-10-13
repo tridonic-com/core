@@ -15,7 +15,7 @@ from dali.device.general import (
     SetEventFilter,
     SetEventScheme,
 )
-from dali.exceptions import DALISequenceError
+from dali.exceptions import DALISequenceError, TransmissionError
 from dali.gear.colour import QueryColourValueDTR
 from dali.gear.general import QueryControlGearPresent, QueryFadeTimeFadeRate
 from dali.gear.led import QueryDimmingCurve
@@ -29,7 +29,12 @@ from dali.memory.location import FlagValue
 from dali.sequences import progress
 import pytest
 
-from homeassistant.components.dali.const import DOMAIN
+from homeassistant.components.dali.const import (
+    CONF_BUS_POWER,
+    DOMAIN,
+    bus_overload_issue_id,
+    bus_voltage_error_issue_id,
+)
 from homeassistant.components.dali.coordinator import (
     DIAGNOSTICS_SCAN_INTERVAL,
     DaliCoordinator,
@@ -37,7 +42,9 @@ from homeassistant.components.dali.coordinator import (
     _dali_level_to_brightness,
     _log_commissioning_progress,
 )
+from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .conftest import FakeDaliDriver
@@ -107,6 +114,60 @@ async def test_communication_failure_raises_update_failed(
         pytest.raises(UpdateFailed),
     ):
         await coordinator._query_gear(0)
+
+
+async def test_update_bus_voltage_error_raises_overload_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a bus sagging under load mid-operation raises the overload repair."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: True}
+    )
+    entry.add_to_hass(hass)
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=TransmissionError(1)),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+
+    assert issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_update_recovers_and_clears_bus_voltage_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a bus that recovers clears the repair raised while it was down."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: True}
+    )
+    entry.add_to_hass(hass)
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=TransmissionError(1)),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+    assert issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
+
+    await coordinator._async_update_data()
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
 
 
 async def test_metadata_success(

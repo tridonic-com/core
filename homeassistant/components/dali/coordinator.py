@@ -38,6 +38,7 @@ from dali.exceptions import (
     DALISequenceError,
     MemoryLocationNotImplemented,
     ResponseError,
+    TransmissionError,
 )
 from dali.gear.colour import (
     QueryColourStatus,
@@ -83,20 +84,28 @@ from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_BUS_POWER,
     DEVICE_INSTANCE_TYPE_NAMES,
     DEVICE_TYPE_COLOUR,
     DEVICE_TYPE_EMERGENCY,
     DEVICE_TYPE_LED,
     DOMAIN,
     GEAR_DEVICE_TYPE_NAMES,
+    ISSUE_BUS_OVERLOAD,
+    ISSUE_BUS_VOLTAGE_ERROR,
     ISSUE_UNADDRESSED_CONTROLDEVICE,
     ISSUE_UNADDRESSED_GEAR,
     SUPPORTED_GEAR_DEVICE_TYPES,
+    bus_overload_issue_id,
+    bus_voltage_error_issue_id,
     registry_identifier,
     unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
 )
 from .helpers import MASK_LEVEL
+
+# LUBA "ADD DALI FRAME TO TX BUFFER" reason code for an unpowered bus.
+_BUS_VOLTAGE_ERROR_CODE = DriverLubaRs232.LubaTxError.BUS_VOLTAGE_ERROR.value
 
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
@@ -125,6 +134,48 @@ TRIDONIC_GTIN_PREFIX = "9006210"
 METADATA_QUERY_ATTEMPTS = 3
 # Widest input-value resolution IEC 62386-306 defines, in bits.
 MAX_SENSOR_RESOLUTION = 32
+
+
+def raise_bus_voltage_issue(
+    hass: HomeAssistant, entry: ConfigEntry, err: TransmissionError
+) -> None:
+    """Raise a repair for an unpowered or an overloaded DALI bus.
+
+    A bus-voltage error with the integrated supply switched off means the bus
+    is simply unpowered, so offer the fixable repair to switch it on. The same
+    error while a supply already powers the bus means that supply cannot hold
+    the bus up under load, i.e. it is overloaded or undersized; that hardware
+    limit is surfaced for information only.
+    """
+    if err.error_code != _BUS_VOLTAGE_ERROR_CODE:
+        return
+    if entry.data.get(CONF_BUS_POWER, False):
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            bus_overload_issue_id(entry.entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_BUS_OVERLOAD,
+            translation_placeholders={"title": entry.title},
+        )
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        bus_voltage_error_issue_id(entry.entry_id),
+        data={"entry_id": entry.entry_id},
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_BUS_VOLTAGE_ERROR,
+        translation_placeholders={"title": entry.title},
+    )
+
+
+def clear_bus_voltage_issues(hass: HomeAssistant, entry_id: str) -> None:
+    """Remove any unpowered- or overloaded-bus repair for this entry."""
+    ir.async_delete_issue(hass, DOMAIN, bus_voltage_error_issue_id(entry_id))
+    ir.async_delete_issue(hass, DOMAIN, bus_overload_issue_id(entry_id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +425,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._last_diagnostics_scan: float | None = None
         self._discovered = False
         self._initial_refresh = True
+        self._bus_unpowered = False
         self._metadata: dict[int, DaliDeviceData] = {}
         self._device_metadata: dict[int, DaliDeviceData] = {}
         self._luminaire: dict[int, DaliLuminaireData] = {}
@@ -1338,18 +1390,39 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             or now - self._last_full_scan >= FULL_SCAN_INTERVAL.total_seconds()
         )
         addresses = range(64) if full_scan else tuple(self.data or ())
+        if full_scan:
+            LOGGER.info("Scanning DALI bus for control gear")
         data: dict[int, DaliGearData] = {}
-        for address in addresses:
-            gear = await self._query_gear(address, fast=fast, refresh_config=full_scan)
-            if gear is not None:
-                data[address] = gear
-        if not fast and (
-            self._last_diagnostics_scan is None
-            or now - self._last_diagnostics_scan
-            >= DIAGNOSTICS_SCAN_INTERVAL.total_seconds()
-        ):
-            data = await self._async_refresh_gear_diagnostics(data)
-            self._last_diagnostics_scan = now
+        try:
+            for address in addresses:
+                gear = await self._query_gear(
+                    address, fast=fast, refresh_config=full_scan
+                )
+                if gear is not None:
+                    data[address] = gear
+            if full_scan:
+                LOGGER.info("Found %d control gear", len(data))
+            if not fast and (
+                self._last_diagnostics_scan is None
+                or now - self._last_diagnostics_scan
+                >= DIAGNOSTICS_SCAN_INTERVAL.total_seconds()
+            ):
+                data = await self._async_refresh_gear_diagnostics(data)
+                self._last_diagnostics_scan = now
+        except TransmissionError as err:
+            # The interface rejected a frame; a bus-voltage code means the bus
+            # lost power or sagged under load mid-operation. Surface the repair
+            # and fail the update so entities go unavailable until it recovers.
+            raise_bus_voltage_issue(self.hass, self.config_entry, err)
+            self._bus_unpowered = err.error_code == _BUS_VOLTAGE_ERROR_CODE
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+        # The bus answered, so clear any power repair a previous cycle raised.
+        if self._bus_unpowered:
+            clear_bus_voltage_issues(self.hass, self.config_entry.entry_id)
+            self._bus_unpowered = False
         if not full_scan:
             return data
         self._last_full_scan = now
