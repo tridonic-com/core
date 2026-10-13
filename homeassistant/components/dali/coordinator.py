@@ -1190,21 +1190,33 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             translation_key="update_failed",
         )
 
-    async def _configure_general_sensor_events(
+    async def _configure_instance_event_scheme(
         self, address: DeviceShort, instance: InstanceNumber
     ) -> None:
-        """Make a Part 306 instance report measured values self-addressed.
+        """Make an instance stamp its short address onto every event.
 
-        A general-sensor instance may emit events under the "Instance" scheme,
-        whose frames carry no short address, so a measured value cannot be tied
-        to a device. Switching to the Device/Instance scheme makes every event
-        carry the short address the entities are keyed by, and the instance and
-        measured-value filter are (re-)enabled so reports are generated.
+        An instance may emit events under the "Instance" scheme, whose frames
+        carry no short address, so an event cannot be tied to a device and two
+        devices of the same instance type are indistinguishable. Every entity
+        keys on the short address, so each discovered instance - button,
+        occupancy, light and general sensor alike - is switched to the
+        Device/Instance scheme, which carries it.
         """
         try:
             await self.driver.send(EnableInstance(address, instance))
             await self.driver.send(DTR0(EventScheme.device_instance))
             await self.driver.send(SetEventScheme(address, instance))
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+
+    async def _enable_measured_value_events(
+        self, address: DeviceShort, instance: InstanceNumber
+    ) -> None:
+        """Enable measured-value reporting for a Part 306 sensor instance."""
+        try:
             await self.driver.send(DTR2(0))
             await self.driver.send(DTR1(0))
             await self.driver.send(DTR0(InstanceEventFilter.measured_value))
@@ -1249,20 +1261,22 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 self._apply_device_metadata(address_int, metadata, input_device=True)
                 self._persist_metadata()
         for address, instance, instance_type in self.device_instances:
-            if instance_type != 6:
-                continue
             key = (address, instance)
             device_short = DeviceShort(address)
             instance_number = InstanceNumber(instance)
-            if key not in self.input_devices:
+            if instance_type == 6 and key not in self.input_devices:
                 self.input_devices[key] = await self._query_general_sensor(
                     device_short, instance
                 )
                 self._persist_metadata()
             if key not in self._configured_instances:
-                await self._configure_general_sensor_events(
+                await self._configure_instance_event_scheme(
                     device_short, instance_number
                 )
+                if instance_type == 6:
+                    await self._enable_measured_value_events(
+                        device_short, instance_number
+                    )
                 self._configured_instances.add(key)
         self.async_update_listeners()
 

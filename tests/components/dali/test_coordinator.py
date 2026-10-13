@@ -753,6 +753,29 @@ async def test_part_306_instance_configured_for_device_instance_scheme(
     assert preceding_dtr0.param == EventScheme.device_instance
 
 
+async def test_non_sensor_instance_switched_to_device_instance_scheme(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a light/button instance is also addressed, but gets no sensor filter.
+
+    Light (type 4), occupancy and push-button instances emit events the
+    entities key by short address, so they too are switched to the
+    Device/Instance scheme. Only general sensors need the measured-value
+    filter, so it must not be sent for them.
+    """
+    fake_dali_driver.dev_inst_map.mapping = {(2, 0): 4}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    await coordinator._async_update_data()
+
+    assert any(isinstance(command, SetEventScheme) for command in fake_dali_driver.sent)
+    assert not any(
+        isinstance(command, SetEventFilter) for command in fake_dali_driver.sent
+    )
+
+
 async def test_part_306_query_failure_raises_update_failed(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
