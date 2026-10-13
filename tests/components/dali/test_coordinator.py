@@ -134,9 +134,7 @@ async def test_update_bus_voltage_error_raises_overload_repair(
     ):
         await coordinator._async_update_data()
 
-    assert issue_registry.async_get_issue(
-        DOMAIN, bus_overload_issue_id(entry.entry_id)
-    )
+    assert issue_registry.async_get_issue(DOMAIN, bus_overload_issue_id(entry.entry_id))
     assert not issue_registry.async_get_issue(
         DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
     )
@@ -159,9 +157,7 @@ async def test_update_recovers_and_clears_bus_voltage_repair(
         pytest.raises(UpdateFailed),
     ):
         await coordinator._async_update_data()
-    assert issue_registry.async_get_issue(
-        DOMAIN, bus_overload_issue_id(entry.entry_id)
-    )
+    assert issue_registry.async_get_issue(DOMAIN, bus_overload_issue_id(entry.entry_id))
 
     await coordinator._async_update_data()
 
@@ -633,8 +629,15 @@ async def test_general_sensor_rejects_out_of_range_resolution(
 @pytest.mark.parametrize(
     ("input_device", "expected_name", "expected_model"),
     [
-        pytest.param(False, "USB-DALI2/5 (gear)", "DALI control gear", id="gear"),
-        pytest.param(True, "USB-DALI2/5 (sensor)", "DALI control device", id="sensor"),
+        pytest.param(
+            False, "USB-DALI2/5 (gear)", "DALI control gear (address 5)", id="gear"
+        ),
+        pytest.param(
+            True,
+            "USB-DALI2/5 (sensor)",
+            "DALI control device (address 5)",
+            id="sensor",
+        ),
     ],
 )
 async def test_device_info_for_unknown_address(
@@ -663,7 +666,7 @@ async def test_device_info_uses_gtin_as_model_id(
 
     device_info = coordinator.device_info("entry", "USB-DALI2", 5)
 
-    assert device_info["model"] == "DALI control gear"
+    assert device_info["model"] == "DALI control gear (address 5)"
     assert device_info["model_id"] == "1234567654321"
 
 
@@ -695,19 +698,19 @@ async def test_device_info_joins_the_batch_and_serial_number(
     [
         pytest.param(
             (6,),
-            "DALI control gear – LED module (DT6, IEC 62386-207)",
+            "DALI control gear – LED module (DT6, IEC 62386-207) (address 5)",
             id="led",
         ),
         pytest.param(
             (1,),
             "DALI control gear – Self-contained emergency lighting "
-            "(DT1, IEC 62386-202)",
+            "(DT1, IEC 62386-202) (address 5)",
             id="emergency",
         ),
         pytest.param(
             (6, 8),
             "DALI control gear – LED module (DT6, IEC 62386-207), "
-            "Colour control (DT8, IEC 62386-209)",
+            "Colour control (DT8, IEC 62386-209) (address 5)",
             id="led_and_colour",
         ),
     ],
@@ -739,7 +742,7 @@ async def test_device_info_model_exposes_control_device_part(
 
     assert device_info["model"] == (
         "DALI control device – Occupancy sensor (IEC 62386-303), "
-        "Light sensor (IEC 62386-304)"
+        "Light sensor (IEC 62386-304) (address 5)"
     )
 
 

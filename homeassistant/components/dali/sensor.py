@@ -172,6 +172,7 @@ IDENTIFICATION_SENSOR_TYPES: tuple[DaliIdentificationSensorDescription, ...] = (
     DaliIdentificationSensorDescription(
         key="identification_number",
         translation_key="identification_number",
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.identification_number,
     ),
 )
@@ -775,6 +776,9 @@ async def async_setup_entry(
         entities: list[SensorEntity] = []
         for address in set(coordinator.data) - known_identification_gear:
             known_identification_gear.add(address)
+            entities.append(
+                DaliAddressSensor(coordinator, entry.entry_id, entry.title, address)
+            )
             entities.extend(
                 DaliIdentificationSensor(
                     coordinator, entry.entry_id, entry.title, address, description
@@ -786,6 +790,15 @@ async def async_setup_entry(
         }
         for address in device_addresses - known_identification_devices:
             known_identification_devices.add(address)
+            entities.append(
+                DaliAddressSensor(
+                    coordinator,
+                    entry.entry_id,
+                    entry.title,
+                    address,
+                    input_device=True,
+                )
+            )
             entities.extend(
                 DaliIdentificationSensor(
                     coordinator,
@@ -978,10 +991,8 @@ class DaliIdentificationSensor(CoordinatorEntity[DaliCoordinator], SensorEntity)
     """Representation of a memory bank 0 identification value of a bus unit.
 
     The device registry shows the batch and serial number joined in its single
-    serial number field, so these entities are what expose the undivided value
-    memory bank 0 actually stores. They carry no entity category so they are
-    listed with the device's other values instead of being tucked away under
-    diagnostics.
+    serial number field, so this diagnostic entity is what exposes the undivided
+    value memory bank 0 actually stores.
     """
 
     _attr_has_entity_name = True
@@ -1015,6 +1026,42 @@ class DaliIdentificationSensor(CoordinatorEntity[DaliCoordinator], SensorEntity)
         return self.entity_description.value_fn(
             self.coordinator.device_data(self._address, input_device=self._input_device)
         )
+
+
+class DaliAddressSensor(CoordinatorEntity[DaliCoordinator], SensorEntity):
+    """Representation of a bus unit's DALI short address.
+
+    The device registry has no field for the bus address, so this diagnostic
+    entity exposes it. The address is also part of the device name.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "dali_address"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        coordinator: DaliCoordinator,
+        entry_id: str,
+        title: str,
+        address: int,
+        *,
+        input_device: bool = False,
+    ) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._address = address
+        kind = "controldevice_" if input_device else ""
+        self._attr_unique_id = f"{entry_id}_{address}_{kind}dali_address"
+        self._attr_device_info = coordinator.device_info(
+            entry_id, title, address, input_device=input_device
+        )
+
+    @property
+    @override
+    def native_value(self) -> int:
+        """Return the bus short address."""
+        return self._address
 
 
 class DaliEmergencySensor(CoordinatorEntity[DaliCoordinator], SensorEntity):

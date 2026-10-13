@@ -290,6 +290,9 @@
       "cri": {
         "name": "Color rendering index"
       },
+      "dali_address": {
+        "name": "DALI address"
+      },
       "duration_test_failed_counter_total": {
         "name": "Duration test failed counter"
       },

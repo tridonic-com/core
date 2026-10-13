@@ -1617,7 +1617,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 )
             },
             name=f"{self._interface_label(title)}/{address} ({kind})",
-            model=model,
+            model=f"{model} (address {address})",
             model_id=str(data.gtin) if data.gtin is not None else None,
             serial_number=_registry_serial_number(data),
             sw_version=data.firmware_version,

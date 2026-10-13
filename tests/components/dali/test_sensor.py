@@ -205,10 +205,10 @@ async def test_identification_sensors_report_the_printed_numbers(
     entity_id: str,
     expected_state: str,
 ) -> None:
-    """Test the values the device registry has no field for get their own entities.
+    """Test the identification number entities report the printed numbers.
 
-    They stand in for registry fields that do not exist, so they carry no
-    entity category: hiding them under diagnostics would defeat the point.
+    The device-info panel already carries this value as the device serial
+    number, so the sensor itself is filed under diagnostics.
     """
     fake_dali_driver.dev_inst_map.mapping = {(1, 3): 6}
     entry = MockConfigEntry(
@@ -226,7 +226,55 @@ async def test_identification_sensors_report_the_printed_numbers(
     state = hass.states.get(entity_id)
     assert state is not None
     assert state.state == expected_state
-    assert entity_registry.async_get(entity_id).entity_category is None
+    assert (
+        entity_registry.async_get(entity_id).entity_category
+        == EntityCategory.DIAGNOSTIC
+    )
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "expected_state"),
+    [
+        ("sensor.usb_dali2_0_gear_dali_address", "0"),
+        ("sensor.usb_dali2_1_sensor_dali_address", "1"),
+    ],
+    ids=[
+        "gear_address",
+        "device_address",
+    ],
+)
+async def test_dali_address_sensors_report_the_short_address(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    fake_dali_driver: FakeDaliDriver,
+    entity_id: str,
+    expected_state: str,
+) -> None:
+    """Test the DALI address entities report the bus short address.
+
+    The address is part of the device name, so the sensor is filed under
+    diagnostics.
+    """
+    fake_dali_driver.dev_inst_map.mapping = {(1, 3): 6}
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == expected_state
+    assert (
+        entity_registry.async_get(entity_id).entity_category
+        == EntityCategory.DIAGNOSTIC
+    )
 
 
 @pytest.mark.parametrize(
@@ -300,11 +348,7 @@ async def test_memory_bank_sensors_are_diagnostic(
     entity_registry: er.EntityRegistry,
     fake_dali_driver: FakeDaliDriver,
 ) -> None:
-    """Test every memory bank sensor is filed under diagnostics.
-
-    The identification number is the one sensor of a gear that is not, since it
-    stands in for a device registry field.
-    """
+    """Test every memory bank sensor is filed under diagnostics."""
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
     )
@@ -326,7 +370,6 @@ async def test_memory_bank_sensors_are_diagnostic(
         registry_entry.entity_category
         for registry_entry in er.async_entries_for_device(entity_registry, device.id)
         if registry_entry.domain == "sensor"
-        and registry_entry.translation_key != "identification_number"
     }
 
     assert categories == {EntityCategory.DIAGNOSTIC}
