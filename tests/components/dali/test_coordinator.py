@@ -32,6 +32,7 @@ import pytest
 from homeassistant.components.dali.const import (
     CONF_BUS_POWER,
     DOMAIN,
+    address_collision_issue_id,
     bus_overload_issue_id,
     bus_voltage_error_issue_id,
 )
@@ -47,7 +48,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from .conftest import FakeDaliDriver
+from .conftest import FakeDaliDriver, _FakeGear
 
 from tests.common import MockConfigEntry
 
@@ -1262,3 +1263,51 @@ async def test_static_bank_values_are_persisted(coordinator: DaliCoordinator) ->
 
     assert stored["luminaire"]["0"]["luminaire_identification"] == "Office downlight"
     assert stored["maintenance"]["0"]["rated_median_useful_life"] == 50000
+
+
+async def test_detect_address_collision(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test two gear answering one short address are reported as a collision."""
+    fake_dali_driver.colliding[5] = [_FakeGear((6,), 100), _FakeGear((6,), 200)]
+
+    assert await coordinator._detect_address_collisions() == [5]
+
+
+async def test_no_collision_without_framing_error(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test a bus where every address answers cleanly reports no collision."""
+    assert await coordinator._detect_address_collisions() == []
+
+
+async def test_transient_frame_error_is_not_a_collision(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a single glitched probe frame does not count as a collision."""
+    fake_dali_driver.flaky = {0}
+
+    assert await coordinator._detect_address_collisions() == []
+
+
+async def test_address_collision_raises_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a collision found during a full scan raises a fixable repair."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+    fake_dali_driver.colliding[5] = [_FakeGear((6,), 100), _FakeGear((6,), 200)]
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    await coordinator._async_update_data()
+
+    issue = issue_registry.async_get_issue(
+        DOMAIN, address_collision_issue_id(entry.entry_id)
+    )
+    assert issue is not None
+    assert issue.is_fixable
+    assert issue.translation_placeholders["addresses"] == "5"

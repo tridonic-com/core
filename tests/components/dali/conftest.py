@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Generator
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from decimal import Decimal
 from types import GeneratorType, SimpleNamespace
 from typing import TypeVar
@@ -39,6 +39,7 @@ from dali.gear.general import (
     QueryMinLevel,
     QueryMissingShortAddress,
     QuerySystemFailureLevel,
+    SetShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import (
@@ -79,6 +80,14 @@ def mock_setup_entry() -> Generator[AsyncMock]:
         "homeassistant.components.dali.async_setup_entry", return_value=True
     ) as mock_setup_entry:
         yield mock_setup_entry
+
+
+@dataclass
+class _FakeGear:
+    """A physical control gear tracked through a collision resolution."""
+
+    device_types: tuple[int, ...]
+    serial: int
 
 
 class FakeDevInstMap:
@@ -253,6 +262,19 @@ class FakeDaliDriver:
             208: self.emergency_memory,
         }
         self.emergency_commands: list[tuple[int, str]] = []
+        # Per-gear bank-0 identification overriding the shared default, so gear
+        # re-addressed out of a collision keep distinct serial numbers.
+        self.gear_metadata: dict[int, dict[object, object]] = {}
+        # Short addresses answered by more than one gear, each with its own
+        # identity; a gear here garbles the collision-probe backward frame.
+        self.colliding: dict[int, list[_FakeGear]] = {}
+        # Gear whose short address was cleared, awaiting re-commissioning.
+        self._pool: list[_FakeGear] = []
+        # Addresses that glitch one probe frame but are not truly colliding.
+        self.flaky: set[int] = set()
+        self._flaky_seen: set[int] = set()
+        self._gear_dtr0: int | None = None
+        self._commission_available: list[int] | None = None
         self.unaddressed_gears: list[tuple[int, ...]] = []
         # Each pending control device is a list of (instance, instance_type) tuples.
         self.unaddressed_devices: list[list[tuple[int, int]]] = []
@@ -305,9 +327,15 @@ class FakeDaliDriver:
             return SimpleNamespace(value=True if self.unaddressed_gears else None)
         if isinstance(command, QueryMissingDeviceShortAddress):
             return SimpleNamespace(value=True if self.unaddressed_devices else None)
+        if isinstance(command, DTR0):
+            self._gear_dtr0 = command.param
+            return SimpleNamespace(value=None)
         address = command.destination.address
+        if isinstance(command, SetShortAddress):
+            self._set_short_address(address, self._gear_dtr0)
+            return SimpleNamespace(value=None)
         if isinstance(command, QueryControlGearPresent):
-            return SimpleNamespace(value=address in self.gears)
+            return self._gear_present_response(address)
         if isinstance(command, QueryActualLevel):
             return SimpleNamespace(value=self.levels[address])
         if isinstance(command, QueryMinLevel):
@@ -378,10 +406,18 @@ class FakeDaliDriver:
                 sequence.gi_frame is not None
                 and sequence.gi_frame.f_globals["__name__"] == "dali.device.sequences"
             )
+            available = (
+                sequence.gi_frame.f_locals.get("available_addresses")
+                if sequence.gi_frame is not None
+                else None
+            )
             sequence.close()
             # Commissioning takes bus time on real hardware.
             await asyncio.sleep(0)
-            return self._commission_devices() if is_device else self._commission()
+            if is_device:
+                return self._commission_devices()
+            self._commission_available = available
+            return self._commission()
         if sequence.__name__ == "read_all":
             frame_locals = sequence.gi_frame.f_locals
             bank = frame_locals.get("self")
@@ -390,7 +426,7 @@ class FakeDaliDriver:
             sequence.close()
             bank_address = getattr(bank, "address", None)
             if bank_address == 0:
-                return self.metadata
+                return self.gear_metadata.get(address, self.metadata)
             values = self.bank_memory.get(bank_address, {})
             if address not in values:
                 raise MemoryLocationNotImplemented
@@ -478,13 +514,68 @@ class FakeDaliDriver:
                 (0, 0) if value > 0x4F else (value & 0x0F, (value >> 4) & 0x07)
             )
 
+    def _gear_present_response(self, address: int) -> SimpleNamespace:
+        """Return a QueryControlGearPresent response for a short address.
+
+        A lone gear answers "yes" cleanly, several gear answering at once garble
+        the frame into a framing error the driver surfaces, and an empty address
+        does not answer at all.
+        """
+        if address not in self.gears and address not in self.colliding:
+            return SimpleNamespace(value=False, raw_value=None)
+        error = address in self.colliding
+        if address in self.flaky and address not in self._flaky_seen:
+            self._flaky_seen.add(address)
+            error = True
+        return SimpleNamespace(value=True, raw_value=SimpleNamespace(error=error))
+
+    def _serial_at(self, address: int) -> object:
+        """Return the identification number a gear reports at a short address."""
+        return self.gear_metadata.get(address, self.metadata).get(
+            info.IdentificationNumber
+        )
+
+    def _set_short_address(self, address: int, dtr0: int | None) -> None:
+        """Apply a SetShortAddress written for the gear at a short address."""
+        if dtr0 == 255:
+            # Clear the address on every gear that answers it; they drop out of
+            # the bus until re-commissioned.
+            if address in self.gears:
+                self._pool.append(
+                    _FakeGear(self.gears.pop(address), self._serial_at(address))
+                )
+                self.levels.pop(address, None)
+                self.gear_metadata.pop(address, None)
+            self._pool.extend(self.colliding.pop(address, []))
+            return
+        new = (dtr0 or 0) >> 1
+        if address in self.gears:
+            self.gears[new] = self.gears.pop(address)
+            self.levels[new] = self.levels.pop(address, 0)
+            if address in self.gear_metadata:
+                self.gear_metadata[new] = self.gear_metadata.pop(address)
+
     def _commission(self) -> None:
-        """Assign free short addresses to unaddressed gear."""
-        free = [address for address in range(64) if address not in self.gears]
+        """Assign free short addresses to unaddressed and collision-freed gear."""
+        candidates = (
+            range(64)
+            if self._commission_available is None
+            else self._commission_available
+        )
+        free = [address for address in candidates if address not in self.gears]
         while self.unaddressed_gears and free:
             address = free.pop(0)
             self.gears[address] = self.unaddressed_gears.pop(0)
             self.levels[address] = 0
+        while self._pool and free:
+            address = free.pop(0)
+            gear = self._pool.pop(0)
+            self.gears[address] = gear.device_types
+            self.levels[address] = 0
+            self.gear_metadata[address] = {
+                **self.metadata,
+                info.IdentificationNumber: gear.serial,
+            }
 
     def _commission_devices(self) -> None:
         """Assign free short addresses to unaddressed control devices."""

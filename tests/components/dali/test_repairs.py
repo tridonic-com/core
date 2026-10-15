@@ -5,15 +5,18 @@ from typing import Any
 from unittest.mock import patch
 
 from dali.exceptions import ProgramShortAddressFailure
+from dali.memory import info
 import pytest
 
 from homeassistant.components.dali.const import (
     CONF_BUS_POWER,
     DOMAIN,
+    address_collision_issue_id,
     bus_voltage_error_issue_id,
     unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
 )
+from homeassistant.components.dali.coordinator import DaliDeviceData
 from homeassistant.components.repairs import DOMAIN as REPAIRS_DOMAIN
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
@@ -21,7 +24,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 
-from .conftest import FakeDaliDriver
+from .conftest import FakeDaliDriver, _FakeGear
 
 from tests.common import MockConfigEntry
 from tests.components.repairs import process_repair_fix_flow, start_repair_fix_flow
@@ -233,4 +236,170 @@ async def test_issue_removed_with_entry(
             DOMAIN, unaddressed_gear_issue_id(entry.entry_id)
         )
         is None
+    )
+
+
+async def _setup_entry(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> MockConfigEntry:
+    """Set up a DALI entry with the fake driver and wait for the first scan."""
+    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+async def _run_collision_fix_flow(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    entry: MockConfigEntry,
+) -> dict[str, Any]:
+    """Start the collision fix flow, confirm it, and return the final result."""
+    client = await hass_client()
+    result = await start_repair_fix_flow(
+        client, DOMAIN, address_collision_issue_id(entry.entry_id)
+    )
+    assert result["step_id"] == "confirm"
+
+    result = await process_repair_fix_flow(client, result["flow_id"])
+    assert result["type"] == FlowResultType.SHOW_PROGRESS
+    await hass.async_block_till_done()
+
+    return await process_repair_fix_flow(client, result["flow_id"])
+
+
+async def test_address_collision_issue_is_fixed(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    issue_registry: ir.IssueRegistry,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test the repair restores the known gear's address and moves the intruder."""
+    fake_dali_driver.gears[5] = (6,)
+    fake_dali_driver.levels[5] = 128
+    fake_dali_driver.gear_metadata[5] = {
+        **fake_dali_driver.metadata,
+        info.IdentificationNumber: 100,
+    }
+    fake_dali_driver.colliding[5] = [_FakeGear((6,), 200)]
+    entry = await _setup_entry(hass, fake_dali_driver)
+
+    # A colliding gear cannot be queried, so its identity is only known from a
+    # scan before the collision appeared; model that persisted knowledge.
+    entry.runtime_data._metadata[5] = DaliDeviceData(identification_number=100)
+
+    issue_id = address_collision_issue_id(entry.entry_id)
+    assert issue_registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    result = await _run_collision_fix_flow(hass, hass_client, entry)
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert issue_registry.async_get_issue(DOMAIN, issue_id) is None
+    coordinator = entry.runtime_data
+    # The gear Home Assistant knew keeps address 5; the intruder takes a free one.
+    assert coordinator._metadata[5].identification_number == 100
+    intruder = next(
+        address
+        for address, data in coordinator._metadata.items()
+        if data.identification_number == 200
+    )
+    assert intruder != 5
+    assert intruder in coordinator.data
+
+
+async def test_address_collision_unknown_identity_reassigns(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    issue_registry: ir.IssueRegistry,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test a collision with no recorded identity re-addresses both gear."""
+    fake_dali_driver.colliding[5] = [_FakeGear((6,), 100), _FakeGear((6,), 200)]
+    entry = await _setup_entry(hass, fake_dali_driver)
+
+    issue_id = address_collision_issue_id(entry.entry_id)
+    assert issue_registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    result = await _run_collision_fix_flow(hass, hass_client, entry)
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert issue_registry.async_get_issue(DOMAIN, issue_id) is None
+    coordinator = entry.runtime_data
+    assert 5 not in coordinator.data
+    serials = {data.identification_number for data in coordinator._metadata.values()}
+    assert {100, 200} <= serials
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "reason"),
+    [
+        pytest.param(OSError("offline"), "cannot_connect", id="offline"),
+        pytest.param(ProgramShortAddressFailure(1), "program_failed", id="program"),
+    ],
+)
+async def test_address_collision_fix_flow_failures(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    issue_registry: ir.IssueRegistry,
+    fake_dali_driver: FakeDaliDriver,
+    side_effect: Exception,
+    reason: str,
+) -> None:
+    """Test re-addressing failures abort and keep the collision issue."""
+    fake_dali_driver.gears[5] = (6,)
+    fake_dali_driver.levels[5] = 128
+    fake_dali_driver.gear_metadata[5] = {
+        **fake_dali_driver.metadata,
+        info.IdentificationNumber: 100,
+    }
+    fake_dali_driver.colliding[5] = [_FakeGear((6,), 200)]
+    entry = await _setup_entry(hass, fake_dali_driver)
+
+    with patch.object(fake_dali_driver, "_commission", side_effect=side_effect):
+        result = await _run_collision_fix_flow(hass, hass_client, entry)
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == reason
+    assert (
+        issue_registry.async_get_issue(
+            DOMAIN, address_collision_issue_id(entry.entry_id)
+        )
+        is not None
+    )
+
+
+async def test_address_collision_fix_flow_unresolved(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    issue_registry: ir.IssueRegistry,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test a collision that persists after re-addressing aborts and stays raised."""
+    fake_dali_driver.gears[5] = (6,)
+    fake_dali_driver.levels[5] = 128
+    fake_dali_driver.gear_metadata[5] = {
+        **fake_dali_driver.metadata,
+        info.IdentificationNumber: 100,
+    }
+    fake_dali_driver.colliding[5] = [_FakeGear((6,), 200)]
+    entry = await _setup_entry(hass, fake_dali_driver)
+
+    with patch.object(fake_dali_driver, "_set_short_address", return_value=None):
+        result = await _run_collision_fix_flow(hass, hass_client, entry)
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "collision_remaining"
+    assert (
+        issue_registry.async_get_issue(
+            DOMAIN, address_collision_issue_id(entry.entry_id)
+        )
+        is not None
     )
