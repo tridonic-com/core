@@ -34,6 +34,41 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "control_gear_output_power_limitation": {
+        "name": "Control gear output power limitation"
+      },
+      "control_gear_overall_failure": {
+        "name": "Control gear failure"
+      },
+      "control_gear_overvoltage": {
+        "name": "Control gear supply overvoltage"
+      },
+      "control_gear_thermal_derating": {
+        "name": "Control gear thermal derating"
+      },
+      "control_gear_thermal_shutdown": {
+        "name": "Control gear thermal shutdown"
+      },
+      "control_gear_undervoltage": {
+        "name": "Control gear supply undervoltage"
+      },
+      "light_source_open_circuit": {
+        "name": "Light source open circuit"
+      },
+      "light_source_overall_failure": {
+        "name": "Light source failure"
+      },
+      "light_source_short_circuit": {
+        "name": "Light source short circuit"
+      },
+      "light_source_thermal_derating": {
+        "name": "Light source thermal derating"
+      },
+      "light_source_thermal_shutdown": {
+        "name": "Light source thermal shutdown"
+      }
+    },
     "button": {
       "search_devices": {
         "name": "Search for devices"
@@ -97,8 +132,32 @@
       }
     },
     "sensor": {
+      "active_energy": {
+        "name": "Active energy"
+      },
       "cct": {
         "name": "Correlated color temperature"
+      },
+      "control_gear_external_supply_voltage": {
+        "name": "Control gear supply voltage"
+      },
+      "control_gear_internal_temperature": {
+        "name": "Control gear internal temperature"
+      },
+      "control_gear_operating_time": {
+        "name": "Control gear operating time"
+      },
+      "control_gear_output_current_percent": {
+        "name": "Control gear output current"
+      },
+      "control_gear_reference_temperature": {
+        "name": "Control gear reference temperature"
+      },
+      "control_gear_start_counter": {
+        "name": "Control gear start counter"
+      },
+      "control_gear_supply_frequency": {
+        "name": "Control gear supply frequency"
       },
       "cri": {
         "name": "Color rendering index"
@@ -130,6 +189,27 @@
       "light_output_nominal": {
         "name": "Nominal light output"
       },
+      "light_source_current": {
+        "name": "Light source current"
+      },
+      "light_source_on_time": {
+        "name": "Light source on time"
+      },
+      "light_source_on_time_resettable": {
+        "name": "Light source on time (resettable)"
+      },
+      "light_source_start_counter": {
+        "name": "Light source start counter"
+      },
+      "light_source_start_counter_resettable": {
+        "name": "Light source start counter (resettable)"
+      },
+      "light_source_temperature": {
+        "name": "Light source temperature"
+      },
+      "light_source_voltage": {
+        "name": "Light source voltage"
+      },
       "luminaire_color": {
         "name": "Luminaire color"
       },
@@ -147,6 +227,12 @@
       },
       "manufacturer_gtin": {
         "name": "Luminaire manufacturer GTIN"
+      },
+      "rated_median_useful_life": {
+        "name": "Rated median useful life"
+      },
+      "rated_median_useful_light_source_starts": {
+        "name": "Rated median useful light source starts"
       },
       "week_of_manufacture": {
         "name": "Week of manufacture"

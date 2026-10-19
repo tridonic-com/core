@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Generator
 from dataclasses import dataclass
+from decimal import Decimal
 from types import GeneratorType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -27,7 +28,13 @@ from dali.gear.general import (
     SetShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
-from dali.memory import info, oem
+from dali.memory import (
+    diagnostics as diagnostics_memory,
+    energy,
+    info,
+    maintenance,
+    oem,
+)
 import pytest
 
 
@@ -111,7 +118,50 @@ class FakeDaliDriver:
                     oem.LuminaireColor: "white",
                     oem.LuminaireIdentification: "Office downlight",
                 }
-            }
+            },
+            202: {0: {energy.ActiveEnergy: Decimal("1234.5")}},
+            205: {
+                0: {
+                    diagnostics_memory.ControlGearOperatingTime: 360000,
+                    diagnostics_memory.ControlGearStartCounter: 120,
+                    diagnostics_memory.ControlGearExternalSupplyVoltage: Decimal(
+                        "230.5"
+                    ),
+                    diagnostics_memory.ControlGearExternalSupplyVoltageFrequency: 50,
+                    diagnostics_memory.ControlGearPowerFactor: Decimal("0.95"),
+                    diagnostics_memory.ControlGearTemperature: 45,
+                    diagnostics_memory.ControlGearOutputCurrentPercent: 80,
+                    diagnostics_memory.ControlGearOverallFailureCondition: False,
+                    diagnostics_memory.ControlGearExternalSupplyUndervoltage: False,
+                    diagnostics_memory.ControlGearExternalSupplyOvervoltage: False,
+                    diagnostics_memory.ControlGearOutputPowerLimitation: False,
+                    diagnostics_memory.ControlGearThermalDerating: True,
+                    diagnostics_memory.ControlGearThermalShutdown: False,
+                }
+            },
+            206: {
+                0: {
+                    diagnostics_memory.LightSourceStartCounterResettable: 12,
+                    diagnostics_memory.LightSourceStartCounter: 118,
+                    diagnostics_memory.LightSourceOnTimeResettable: 7200,
+                    diagnostics_memory.LightSourceOnTime: 352800,
+                    diagnostics_memory.LightSourceVoltage: Decimal("38.4"),
+                    diagnostics_memory.LightSourceCurrent: Decimal("0.35"),
+                    diagnostics_memory.LightSourceTemperature: 52,
+                    diagnostics_memory.LightSourceOverallFailureCondition: False,
+                    diagnostics_memory.LightSourceShortCircuit: False,
+                    diagnostics_memory.LightSourceOpenCircuit: False,
+                    diagnostics_memory.LightSourceThermalDerating: False,
+                    diagnostics_memory.LightSourceThermalShutdown: False,
+                }
+            },
+            207: {
+                0: {
+                    maintenance.RatedMedianUsefulLifeOfLuminaire: 50000,
+                    maintenance.InternalControlGearReferenceTemperature: 65,
+                    maintenance.RatedMedianUsefulLightSourceStarts: 50000,
+                }
+            },
         }
         self._transport = SimpleNamespace(close=self._close)
         # Per-gear bank-0 identification overriding the shared default, so gear

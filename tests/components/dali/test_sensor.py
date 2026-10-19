@@ -142,3 +142,59 @@ async def test_gear_without_the_luminaire_bank_gets_no_luminaire_sensors(
     assert hass.states.get("sensor.usb_dali2_2_gear_light_distribution_type") is None
     # The identification sensors do not depend on the luminaire bank.
     assert hass.states.get("sensor.usb_dali2_2_gear_identification_number") is not None
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "expected_state", "expected_unit"),
+    [
+        ("sensor.usb_dali2_0_gear_active_energy", "1234.5", "Wh"),
+        ("sensor.usb_dali2_0_gear_control_gear_operating_time", "360000", "s"),
+        ("sensor.usb_dali2_0_gear_control_gear_supply_voltage", "230.5", "V"),
+        ("sensor.usb_dali2_0_gear_control_gear_internal_temperature", "45", "°C"),
+        ("sensor.usb_dali2_0_gear_light_source_current", "0.35", "A"),
+        ("sensor.usb_dali2_0_gear_light_source_start_counter", "118", None),
+        ("sensor.usb_dali2_0_gear_rated_median_useful_life", "50000", "h"),
+        ("sensor.usb_dali2_0_gear_control_gear_reference_temperature", "65", "°C"),
+    ],
+    ids=[
+        "bank_202_energy",
+        "bank_205_duration",
+        "bank_205_scaled_voltage",
+        "bank_205_temperature",
+        "bank_206_scaled_current",
+        "bank_206_counter",
+        "bank_207_life",
+        "bank_207_temperature",
+    ],
+)
+async def test_extended_bank_sensors_report_the_decoded_values(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    entity_id: str,
+    expected_state: str,
+    expected_unit: str | None,
+) -> None:
+    """Test the DiiA Part 252 and 253 banks reach the sensor states.
+
+    The banks are read after setup has finished, so the entities only appear
+    once the deferred diagnostics read lands.
+    """
+    await _setup(hass, fake_dali_driver)
+
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.state == expected_state
+    assert state.attributes.get("unit_of_measurement") == expected_unit
+
+
+async def test_gear_without_the_extended_banks_gets_no_sensors(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test a gear that implements none of the extended banks gains no entities."""
+    await _setup(hass, fake_dali_driver)
+
+    # Only gear 0 has the bank 202/205/206/207 entries in the fake.
+    assert hass.states.get("sensor.usb_dali2_2_gear_active_energy") is None
+    assert hass.states.get("sensor.usb_dali2_2_gear_light_source_voltage") is None
+    assert hass.states.get("sensor.usb_dali2_2_gear_rated_median_useful_life") is None

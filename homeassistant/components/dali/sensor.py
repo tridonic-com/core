@@ -8,12 +8,18 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
 from homeassistant.const import (
+    PERCENTAGE,
     EntityCategory,
+    UnitOfElectricCurrent,
     UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfFrequency,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -23,8 +29,10 @@ from . import DaliConfigEntry
 from .coordinator import (
     DaliCoordinator,
     DaliDeviceData,
+    DaliDiagnosticsData,
     DaliGearData,
     DaliLuminaireData,
+    DaliMaintenanceData,
 )
 
 PARALLEL_UPDATES = 0
@@ -179,6 +187,176 @@ LUMINAIRE_SENSOR_TYPES: tuple[DaliLuminaireSensorDescription, ...] = (
 )
 
 
+@dataclass(frozen=True, kw_only=True)
+class DaliMaintenanceSensorDescription(SensorEntityDescription):
+    """Description of a memory bank 207 rated-life value."""
+
+    value_fn: Callable[[DaliMaintenanceData], int | None]
+
+
+MAINTENANCE_SENSOR_TYPES: tuple[DaliMaintenanceSensorDescription, ...] = (
+    DaliMaintenanceSensorDescription(
+        key="rated_median_useful_life",
+        translation_key="rated_median_useful_life",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.rated_median_useful_life,
+    ),
+    DaliMaintenanceSensorDescription(
+        key="rated_median_useful_light_source_starts",
+        translation_key="rated_median_useful_light_source_starts",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.rated_median_useful_light_source_starts,
+    ),
+    DaliMaintenanceSensorDescription(
+        key="control_gear_reference_temperature",
+        translation_key="control_gear_reference_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_reference_temperature,
+    ),
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class DaliGearDiagnosticSensorDescription(SensorEntityDescription):
+    """Description of a memory bank 205 or 206 diagnostics measurement."""
+
+    value_fn: Callable[[DaliDiagnosticsData], int | float | None]
+
+
+GEAR_DIAGNOSTIC_SENSOR_TYPES: tuple[DaliGearDiagnosticSensorDescription, ...] = (
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_operating_time",
+        translation_key="control_gear_operating_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_operating_time,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_start_counter",
+        translation_key="control_gear_start_counter",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_start_counter,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_external_supply_voltage",
+        translation_key="control_gear_external_supply_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_external_supply_voltage,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_supply_frequency",
+        translation_key="control_gear_supply_frequency",
+        device_class=SensorDeviceClass.FREQUENCY,
+        native_unit_of_measurement=UnitOfFrequency.HERTZ,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_supply_frequency,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_power_factor",
+        device_class=SensorDeviceClass.POWER_FACTOR,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_power_factor,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_internal_temperature",
+        translation_key="control_gear_internal_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_internal_temperature,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="control_gear_output_current_percent",
+        translation_key="control_gear_output_current_percent",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.control_gear_output_current_percent,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_on_time",
+        translation_key="light_source_on_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_on_time,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_on_time_resettable",
+        translation_key="light_source_on_time_resettable",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_on_time_resettable,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_start_counter",
+        translation_key="light_source_start_counter",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_start_counter,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_start_counter_resettable",
+        translation_key="light_source_start_counter_resettable",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_start_counter_resettable,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_voltage",
+        translation_key="light_source_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_voltage,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_current",
+        translation_key="light_source_current",
+        device_class=SensorDeviceClass.CURRENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_current,
+    ),
+    DaliGearDiagnosticSensorDescription(
+        key="light_source_temperature",
+        translation_key="light_source_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.light_source_temperature,
+    ),
+)
+
+ACTIVE_ENERGY_SENSOR = SensorEntityDescription(
+    key="active_energy",
+    translation_key="active_energy",
+    device_class=SensorDeviceClass.ENERGY,
+    native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
+    state_class=SensorStateClass.TOTAL_INCREASING,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: DaliConfigEntry,
@@ -211,9 +389,12 @@ async def async_setup_entry(
     )
 
     known_luminaire: set[int] = set()
+    known_maintenance: set[int] = set()
+    known_diagnostics: set[int] = set()
+    known_energy: set[int] = set()
 
     @callback
-    def async_add_luminaire_sensors() -> None:
+    def async_add_memory_bank_sensors() -> None:
         entities: list[SensorEntity] = []
         for address, gear in coordinator.data.items():
             if gear.luminaire is not None and address not in known_luminaire:
@@ -224,10 +405,37 @@ async def async_setup_entry(
                     )
                     for description in LUMINAIRE_SENSOR_TYPES
                 )
+            if gear.maintenance is not None and address not in known_maintenance:
+                known_maintenance.add(address)
+                entities.extend(
+                    DaliMaintenanceSensor(
+                        coordinator, entry.entry_id, entry.title, address, description
+                    )
+                    for description in MAINTENANCE_SENSOR_TYPES
+                )
+            if gear.diagnostics is not None and address not in known_diagnostics:
+                known_diagnostics.add(address)
+                entities.extend(
+                    DaliGearDiagnosticSensor(
+                        coordinator, entry.entry_id, entry.title, address, description
+                    )
+                    for description in GEAR_DIAGNOSTIC_SENSOR_TYPES
+                )
+            if gear.active_energy is not None and address not in known_energy:
+                known_energy.add(address)
+                entities.append(
+                    DaliEnergySensor(
+                        coordinator,
+                        entry.entry_id,
+                        entry.title,
+                        address,
+                        ACTIVE_ENERGY_SENSOR,
+                    )
+                )
         async_add_entities(entities)
 
-    async_add_luminaire_sensors()
-    entry.async_on_unload(coordinator.async_add_listener(async_add_luminaire_sensors))
+    async_add_memory_bank_sensors()
+    entry.async_on_unload(coordinator.async_add_listener(async_add_memory_bank_sensors))
 
 
 class DaliIdentificationSensor(CoordinatorEntity[DaliCoordinator], SensorEntity):
@@ -347,3 +555,65 @@ class DaliLuminaireSensor(DaliGearBankSensor):
         if gear is None or gear.luminaire is None:
             return None
         return self.entity_description.value_fn(gear.luminaire)
+
+
+class DaliMaintenanceSensor(DaliGearBankSensor):
+    """Representation of a memory bank 207 rated-life value of a control gear."""
+
+    entity_description: DaliMaintenanceSensorDescription
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Return whether the maintenance memory bank has been read."""
+        gear = self._gear
+        return super().available and gear is not None and gear.maintenance is not None
+
+    @property
+    @override
+    def native_value(self) -> int | None:
+        """Return the described rated-life value."""
+        gear = self._gear
+        if gear is None or gear.maintenance is None:
+            return None
+        return self.entity_description.value_fn(gear.maintenance)
+
+
+class DaliGearDiagnosticSensor(DaliGearBankSensor):
+    """Representation of a memory bank 205 or 206 diagnostics measurement."""
+
+    entity_description: DaliGearDiagnosticSensorDescription
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Return whether the diagnostics memory banks have been read."""
+        gear = self._gear
+        return super().available and gear is not None and gear.diagnostics is not None
+
+    @property
+    @override
+    def native_value(self) -> int | float | None:
+        """Return the described diagnostics measurement."""
+        gear = self._gear
+        if gear is None or gear.diagnostics is None:
+            return None
+        return self.entity_description.value_fn(gear.diagnostics)
+
+
+class DaliEnergySensor(DaliGearBankSensor):
+    """Representation of the memory bank 202 active energy total of a gear."""
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Return whether the energy memory bank has been read."""
+        gear = self._gear
+        return super().available and gear is not None and gear.active_energy is not None
+
+    @property
+    @override
+    def native_value(self) -> float | None:
+        """Return the energy the gear has consumed since it was built."""
+        gear = self._gear
+        return gear.active_energy if gear is not None else None

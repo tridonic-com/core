@@ -34,7 +34,13 @@ from dali.gear.general import (
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import QueryDT8ColourValue
-from dali.memory import info, oem
+from dali.memory import (
+    diagnostics as diagnostics_memory,
+    energy,
+    info,
+    maintenance,
+    oem,
+)
 from dali.memory.location import FlagValue, MemoryBank, MemoryValue
 from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
@@ -73,6 +79,10 @@ _BUS_VOLTAGE_ERROR_CODE = DriverLubaRs232.LubaTxError.BUS_VOLTAGE_ERROR.value
 
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
+# The DiiA Part 252 and 253 banks are read location by location, costing well
+# over a second per gear, so they get an interval of their own rather than
+# holding up the light-state poll.
+DIAGNOSTICS_SCAN_INTERVAL = timedelta(minutes=15)
 LOGGER = logging.getLogger(__name__)
 
 # Identification metadata is static per device, so it is persisted and restored
@@ -181,6 +191,60 @@ class DaliLuminaireData:
 
 
 @dataclass(frozen=True, slots=True)
+class DaliMaintenanceData:
+    """Memory bank 207 rated-life data from DiiA Part 253.
+
+    Like memory bank 1 these are programmed when the gear is built into a
+    luminaire and describe what the luminaire is rated for, not what it has
+    done, so they are read once and cached.
+    """
+
+    rated_median_useful_life: int | None = None
+    control_gear_reference_temperature: int | None = None
+    rated_median_useful_light_source_starts: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DaliDiagnosticsData:
+    """Memory banks 205 and 206 diagnostics from DiiA Part 253.
+
+    Bank 205 describes the control gear and bank 206 the light source it
+    drives. A gear may implement either bank alone, so a field left unset only
+    means that value was not readable.
+
+    Each failure condition is a flag the gear latches until the condition
+    clears. The occurrence counters the specification pairs with them are not
+    read.
+    """
+
+    control_gear_operating_time: int | None = None
+    control_gear_start_counter: int | None = None
+    control_gear_external_supply_voltage: float | None = None
+    control_gear_supply_frequency: int | None = None
+    control_gear_power_factor: float | None = None
+    control_gear_internal_temperature: int | None = None
+    control_gear_output_current_percent: int | None = None
+    control_gear_overall_failure: bool | None = None
+    control_gear_undervoltage: bool | None = None
+    control_gear_overvoltage: bool | None = None
+    control_gear_output_power_limitation: bool | None = None
+    control_gear_thermal_derating: bool | None = None
+    control_gear_thermal_shutdown: bool | None = None
+    light_source_start_counter_resettable: int | None = None
+    light_source_start_counter: int | None = None
+    light_source_on_time_resettable: int | None = None
+    light_source_on_time: int | None = None
+    light_source_voltage: float | None = None
+    light_source_current: float | None = None
+    light_source_temperature: int | None = None
+    light_source_overall_failure: bool | None = None
+    light_source_short_circuit: bool | None = None
+    light_source_open_circuit: bool | None = None
+    light_source_thermal_derating: bool | None = None
+    light_source_thermal_shutdown: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DaliGearConfig:
     """Writable IEC 62386-102 configuration variables of one control gear.
 
@@ -219,6 +283,9 @@ class DaliGearData(DaliDeviceData):
     color_temp_max_mired: int | None = None
     xy_color: tuple[float, float] | None = None
     luminaire: DaliLuminaireData | None = None
+    maintenance: DaliMaintenanceData | None = None
+    diagnostics: DaliDiagnosticsData | None = None
+    active_energy: float | None = None
 
 
 class DaliMetadataStore(Store[dict[str, Any]]):
@@ -261,10 +328,14 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         )
         self.driver = driver
         self._last_full_scan: float | None = None
+        self._last_diagnostics_scan: float | None = None
         self._initial_refresh = True
         self._bus_unpowered = False
         self._metadata: dict[int, DaliDeviceData] = {}
         self._luminaire: dict[int, DaliLuminaireData] = {}
+        self._maintenance: dict[int, DaliMaintenanceData] = {}
+        self._diagnostics: dict[int, DaliDiagnosticsData] = {}
+        self._energy: dict[int, float] = {}
         self._gear_config: dict[int, DaliGearConfig] = {}
         self._store: Store[dict[str, Any]] = DaliMetadataStore(
             hass, STORAGE_VERSION, f"{DOMAIN}.{config_entry.entry_id}_metadata"
@@ -284,6 +355,8 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             self._metadata[int(address)] = DaliDeviceData(**values)
         for address, values in stored.get("luminaire", {}).items():
             self._luminaire[int(address)] = DaliLuminaireData(**values)
+        for address, values in stored.get("maintenance", {}).items():
+            self._maintenance[int(address)] = DaliMaintenanceData(**values)
 
     def _persist_metadata(self) -> None:
         """Schedule a debounced save of the identification metadata caches."""
@@ -300,6 +373,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             "luminaire": {
                 str(address): asdict(luminaire)
                 for address, luminaire in self._luminaire.items()
+            },
+            "maintenance": {
+                str(address): asdict(data)
+                for address, data in self._maintenance.items()
             },
         }
 
@@ -540,6 +617,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             color_temp_max_mired=color_temp_max_mired,
             xy_color=xy_color,
             luminaire=self._luminaire.get(address),
+            maintenance=self._maintenance.get(address),
+            diagnostics=self._diagnostics.get(address),
+            active_energy=self._energy.get(address),
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,
             serial_no=metadata.serial_no,
@@ -680,6 +760,175 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             is not None
         ):
             self._luminaire[address] = luminaire
+        if (
+            address not in self._maintenance
+            and (data := await self._query_maintenance(address, gear_address))
+            is not None
+        ):
+            self._maintenance[address] = data
+
+    async def _query_maintenance(
+        self, address: int, gear_address: GearShort
+    ) -> DaliMaintenanceData | None:
+        """Read the memory bank 207 rated-life data of one control gear."""
+        if not self._implements_bank(address, 207):
+            return None
+        values = await self._read_bank(maintenance.BANK_207, gear_address)
+        if values is None:
+            return None
+        return DaliMaintenanceData(
+            rated_median_useful_life=_memory_int(
+                values.get(maintenance.RatedMedianUsefulLifeOfLuminaire)
+            ),
+            control_gear_reference_temperature=_memory_int(
+                values.get(maintenance.InternalControlGearReferenceTemperature)
+            ),
+            rated_median_useful_light_source_starts=_memory_int(
+                values.get(maintenance.RatedMedianUsefulLightSourceStarts)
+            ),
+        )
+
+    async def _query_active_energy(
+        self, address: int, gear_address: GearShort
+    ) -> float | None:
+        """Read the memory bank 202 active energy total of one control gear.
+
+        The bank also carries the instantaneous active power, which is not read
+        here: it lives in volatile memory and would need a far faster poll than
+        the cumulative total to be worth anything.
+        """
+        if not self._implements_bank(address, 202):
+            return None
+        values = await self._read_bank(energy.BANK_202, gear_address)
+        if values is None:
+            return None
+        return _memory_float(values.get(energy.ActiveEnergy))
+
+    async def _query_gear_diagnostics(
+        self, address: int, gear_address: GearShort
+    ) -> DaliDiagnosticsData | None:
+        """Read the memory bank 205 and 206 diagnostics of one control gear.
+
+        Bank 205 covers the control gear and bank 206 the light source it
+        drives. A gear may implement either on its own, so the two reads are
+        kept independent and only a gear answering neither gives nothing back.
+        """
+        if not self._implements_bank(address, 205):
+            return None
+        gear = await self._read_bank(diagnostics_memory.BANK_205, gear_address)
+        light_source = None
+        if self._implements_bank(address, 206):
+            light_source = await self._read_bank(
+                diagnostics_memory.BANK_206, gear_address
+            )
+        if gear is None and light_source is None:
+            return None
+        gear = gear or {}
+        light_source = light_source or {}
+        return DaliDiagnosticsData(
+            control_gear_operating_time=_memory_int(
+                gear.get(diagnostics_memory.ControlGearOperatingTime)
+            ),
+            control_gear_start_counter=_memory_int(
+                gear.get(diagnostics_memory.ControlGearStartCounter)
+            ),
+            control_gear_external_supply_voltage=_memory_float(
+                gear.get(diagnostics_memory.ControlGearExternalSupplyVoltage)
+            ),
+            control_gear_supply_frequency=_memory_int(
+                gear.get(diagnostics_memory.ControlGearExternalSupplyVoltageFrequency)
+            ),
+            control_gear_power_factor=_memory_float(
+                gear.get(diagnostics_memory.ControlGearPowerFactor)
+            ),
+            control_gear_internal_temperature=_memory_int(
+                gear.get(diagnostics_memory.ControlGearTemperature)
+            ),
+            control_gear_output_current_percent=_memory_int(
+                gear.get(diagnostics_memory.ControlGearOutputCurrentPercent)
+            ),
+            control_gear_overall_failure=_memory_bool(
+                gear.get(diagnostics_memory.ControlGearOverallFailureCondition)
+            ),
+            control_gear_undervoltage=_memory_bool(
+                gear.get(diagnostics_memory.ControlGearExternalSupplyUndervoltage)
+            ),
+            control_gear_overvoltage=_memory_bool(
+                gear.get(diagnostics_memory.ControlGearExternalSupplyOvervoltage)
+            ),
+            control_gear_output_power_limitation=_memory_bool(
+                gear.get(diagnostics_memory.ControlGearOutputPowerLimitation)
+            ),
+            control_gear_thermal_derating=_memory_bool(
+                gear.get(diagnostics_memory.ControlGearThermalDerating)
+            ),
+            control_gear_thermal_shutdown=_memory_bool(
+                gear.get(diagnostics_memory.ControlGearThermalShutdown)
+            ),
+            light_source_start_counter_resettable=_memory_int(
+                light_source.get(diagnostics_memory.LightSourceStartCounterResettable)
+            ),
+            light_source_start_counter=_memory_int(
+                light_source.get(diagnostics_memory.LightSourceStartCounter)
+            ),
+            light_source_on_time_resettable=_memory_int(
+                light_source.get(diagnostics_memory.LightSourceOnTimeResettable)
+            ),
+            light_source_on_time=_memory_int(
+                light_source.get(diagnostics_memory.LightSourceOnTime)
+            ),
+            light_source_voltage=_memory_float(
+                light_source.get(diagnostics_memory.LightSourceVoltage)
+            ),
+            light_source_current=_memory_float(
+                light_source.get(diagnostics_memory.LightSourceCurrent)
+            ),
+            light_source_temperature=_memory_int(
+                light_source.get(diagnostics_memory.LightSourceTemperature)
+            ),
+            light_source_overall_failure=_memory_bool(
+                light_source.get(diagnostics_memory.LightSourceOverallFailureCondition)
+            ),
+            light_source_short_circuit=_memory_bool(
+                light_source.get(diagnostics_memory.LightSourceShortCircuit)
+            ),
+            light_source_open_circuit=_memory_bool(
+                light_source.get(diagnostics_memory.LightSourceOpenCircuit)
+            ),
+            light_source_thermal_derating=_memory_bool(
+                light_source.get(diagnostics_memory.LightSourceThermalDerating)
+            ),
+            light_source_thermal_shutdown=_memory_bool(
+                light_source.get(diagnostics_memory.LightSourceThermalShutdown)
+            ),
+        )
+
+    async def _async_refresh_gear_diagnostics(
+        self, data: dict[int, DaliGearData]
+    ) -> dict[int, DaliGearData]:
+        """Re-read the volatile DiiA Part 252 and 253 banks of every gear.
+
+        A gear that fails to answer keeps its previous readings, so a single
+        missed read does not blank the sensors until the next scan.
+        """
+        for address in data:
+            gear_address = GearShort(address)
+            if (
+                active_energy := await self._query_active_energy(address, gear_address)
+            ) is not None:
+                self._energy[address] = active_energy
+            if (
+                diagnostics := await self._query_gear_diagnostics(address, gear_address)
+            ) is not None:
+                self._diagnostics[address] = diagnostics
+        return {
+            address: replace(
+                gear,
+                diagnostics=self._diagnostics.get(address),
+                active_energy=self._energy.get(address),
+            )
+            for address, gear in data.items()
+        }
 
     @override
     async def _async_update_data(self) -> dict[int, DaliGearData]:
@@ -690,6 +939,8 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         only run every ``FULL_SCAN_INTERVAL`` to keep bus traffic low. The
         configuration variables are re-read on the full scan too, as they only
         change when written, here or by another controller on the bus.
+        The extended diagnostics banks are slower still and get an interval of
+        their own, so a bus full of gear cannot stall the light-state poll.
         """
         if not self.driver.is_connected:
             # The interface is gone, typically unplugged. Reloading opens the
@@ -720,6 +971,13 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                     data[address] = gear
             if full_scan:
                 LOGGER.info("Found %d control gear", len(data))
+            if not fast and (
+                self._last_diagnostics_scan is None
+                or now - self._last_diagnostics_scan
+                >= DIAGNOSTICS_SCAN_INTERVAL.total_seconds()
+            ):
+                data = await self._async_refresh_gear_diagnostics(data)
+                self._last_diagnostics_scan = now
         except TransmissionError as err:
             # The interface rejected a frame; a bus-voltage code means the bus
             # lost power or sagged under load mid-operation. Surface the repair
@@ -737,10 +995,21 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         if not full_scan:
             return data
         self._last_full_scan = now
-        # A re-addressed gear must not inherit the previous occupant's config.
+        # A re-addressed gear must not inherit the previous occupant's config
+        # or readings.
         self._gear_config = {
             address: config
             for address, config in self._gear_config.items()
+            if address in data
+        }
+        self._diagnostics = {
+            address: diagnostics
+            for address, diagnostics in self._diagnostics.items()
+            if address in data
+        }
+        self._energy = {
+            address: active_energy
+            for address, active_energy in self._energy.items()
             if address in data
         }
         self._update_unaddressed_gear_issue(await self._has_unaddressed_gear())
