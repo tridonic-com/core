@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+from dali.address import GearShort
 from dali.gear.general import DAPC
 import pytest
 
@@ -12,7 +13,7 @@ from homeassistant.components.dali.coordinator import (
     _brightness_to_dali_level,
     _dali_level_to_brightness,
 )
-from homeassistant.components.dali.light import DaliLight, _is_light
+from homeassistant.components.dali.light import DaliLight, _is_light, _set_xy_color
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN, ColorMode
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
@@ -75,7 +76,7 @@ async def test_light_command_failure_raises_home_assistant_error(
 async def test_light_properties(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test basic light properties."""
+    """Test basic non-DT8 light properties."""
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
     coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
     coordinator.data = {0: DaliGearData(level=128, min_level=86, device_types=(6,))}
@@ -86,18 +87,23 @@ async def test_light_properties(
     assert light.brightness == 128
     assert light.color_mode is ColorMode.BRIGHTNESS
     assert light.supported_color_modes == {ColorMode.BRIGHTNESS}
+    assert light.color_temp_kelvin is None
+    assert light.xy_color is None
 
 
 @pytest.mark.parametrize(
     ("gear", "expected"),
     [
         (DaliGearData(device_types=(6,)), True),
+        (DaliGearData(device_types=(8,)), True),
         (DaliGearData(device_types=()), False),
     ],
-    ids=["dt6", "non_led"],
+    ids=["dt6", "dt8", "non_led"],
 )
-def test_is_light_only_matches_led_gear(gear: DaliGearData, expected: bool) -> None:
-    """Test only dimmable (DT6) gear become lights."""
+def test_is_light_matches_led_or_colour_gear(
+    gear: DaliGearData, expected: bool
+) -> None:
+    """Test only dimmable (DT6) or colour (DT8) gear become lights."""
     assert _is_light(gear) is expected
 
 
@@ -125,6 +131,144 @@ async def test_light_setup_adds_new_entities(
     assert {
         entity.unique_id.rsplit("_", maxsplit=1)[-1] for entity in entity_entries
     } == {"0", "2"}
+
+
+async def test_dt8_light_properties_and_color_commands(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test DT8 properties and color-temperature/XY commands."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=255,
+            device_types=(8,),
+            supports_color_temperature=True,
+            supports_xy=True,
+            color_type_tc_active=False,
+            color_temp_mired=250,
+            color_temp_min_mired=153,
+            color_temp_max_mired=500,
+            xy_color=(0.5, 0.25),
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert light.color_mode is ColorMode.XY
+    assert light.color_temp_kelvin == 4000
+    assert light.xy_color == pytest.approx((0.5, 0.25), abs=1e-5)
+    assert light._attr_min_color_temp_kelvin == 2000
+    assert light._attr_max_color_temp_kelvin == 6535
+
+    with (
+        patch.object(coordinator, "async_update_gear", new_callable=AsyncMock),
+        patch.object(fake_dali_driver, "send", new_callable=AsyncMock) as send,
+    ):
+        await light.async_turn_on(color_temp_kelvin=4000, xy_color=(0.1, 0.2))
+
+    assert send.await_count == 2
+
+
+async def test_color_temperature_change_preserves_brightness(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test setting only color temperature does not drive the arc level."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=128,
+            device_types=(8,),
+            supports_color_temperature=True,
+            color_temp_mired=250,
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    with (
+        patch.object(coordinator, "async_update_gear", new_callable=AsyncMock),
+        patch.object(fake_dali_driver, "run_sequence", new_callable=AsyncMock),
+    ):
+        await light.async_turn_on(color_temp_kelvin=4000)
+
+    assert not any(isinstance(command, DAPC) for command in fake_dali_driver.sent)
+
+
+async def test_color_temperature_only_mode(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test DT8 color temperature mode when XY is unavailable."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=128,
+            device_types=(8,),
+            supports_color_temperature=True,
+            color_temp_mired=250,
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert light.color_mode is ColorMode.COLOR_TEMP
+
+
+async def test_color_temperature_mode_without_readback(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a color-temperature gear reports COLOR_TEMP even without a value."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=128,
+            device_types=(8,),
+            supports_color_temperature=True,
+            color_temp_mired=None,
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert light.color_mode is ColorMode.COLOR_TEMP
+    assert light.color_temp_kelvin is None
+
+
+async def test_dual_mode_reports_active_color_temperature(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a dual-mode gear reports COLOR_TEMP when Tc is the active type."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        2: DaliGearData(
+            level=255,
+            device_types=(8,),
+            supports_color_temperature=True,
+            supports_xy=True,
+            color_type_tc_active=True,
+            color_temp_mired=250,
+            xy_color=(0.5, 0.25),
+        )
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert light.color_mode is ColorMode.COLOR_TEMP
+
+
+async def test_color_modes_are_not_shared_between_lights(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a DT8 light does not change the color modes of a DT6 light."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        0: DaliGearData(level=128, device_types=(6,)),
+        2: DaliGearData(level=128, device_types=(8,), supports_xy=True),
+    }
+    dt6_light = DaliLight(coordinator, entry.entry_id, entry.title, 0)
+    DaliLight(coordinator, entry.entry_id, entry.title, 2)
+
+    assert dt6_light.supported_color_modes == {ColorMode.BRIGHTNESS}
 
 
 @pytest.mark.parametrize("min_level", [1, 86, 128])
@@ -160,6 +304,13 @@ def test_brightness_to_level_snaps_to_closest_readback(
                 _dali_level_to_brightness(other, linear_dimming, min_level) - brightness
             )
             assert chosen_error <= other_error
+
+
+def test_set_xy_color_sequence() -> None:
+    """Test DT8 xy values are converted to DALI DTR commands."""
+    commands = list(_set_xy_color(GearShort(2), (0.25, 0.5)))
+
+    assert len(commands) == 7
 
 
 async def test_light_turn_on_failure_raises_home_assistant_error(

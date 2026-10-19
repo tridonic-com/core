@@ -7,6 +7,10 @@
     'gears': dict({
       '0': dict({
         'batch_no': '0000000000',
+        'color_temp_max_mired': None,
+        'color_temp_min_mired': None,
+        'color_temp_mired': None,
+        'color_type_tc_active': None,
         'device_types': list([
           6,
         ]),
@@ -40,12 +44,19 @@
         'max_level': 254,
         'min_level': 86,
         'serial_no': '010000',
+        'supports_color_temperature': False,
+        'supports_xy': False,
         'system_failure_level': 200,
+        'xy_color': None,
       }),
       '2': dict({
         'batch_no': '0000000000',
+        'color_temp_max_mired': 500,
+        'color_temp_min_mired': 153,
+        'color_temp_mired': 250,
+        'color_type_tc_active': True,
         'device_types': list([
-          6,
+          8,
         ]),
         'extended_fade_time_base': None,
         'extended_fade_time_multiplier': None,
@@ -62,7 +73,13 @@
         'max_level': 254,
         'min_level': 1,
         'serial_no': '010000',
+        'supports_color_temperature': True,
+        'supports_xy': True,
         'system_failure_level': 255,
+        'xy_color': list([
+          0.5000076295109483,
+          0.2500038147554742,
+        ]),
       }),
     }),
   })

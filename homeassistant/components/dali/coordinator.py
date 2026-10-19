@@ -15,6 +15,11 @@ from dali.exceptions import (
     ResponseError,
     TransmissionError,
 )
+from dali.gear.colour import (
+    QueryColourStatus,
+    QueryColourTypeFeatures,
+    QueryColourValueDTR,
+)
 from dali.gear.general import (
     DTR0 as GearDTR0,
     QueryActualLevel,
@@ -28,6 +33,7 @@ from dali.gear.general import (
     SetShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
+from dali.gear.sequences import QueryDT8ColourValue
 from dali.memory import info, oem
 from dali.memory.location import FlagValue, MemoryBank, MemoryValue
 from dali.sequences import Commissioning, QueryDeviceTypes, progress
@@ -42,6 +48,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_BUS_POWER,
+    DEVICE_TYPE_COLOUR,
     DEVICE_TYPE_LED,
     DOMAIN,
     GEAR_DEVICE_TYPE_NAMES,
@@ -204,6 +211,13 @@ class DaliGearData(DaliDeviceData):
     extended_fade_time_multiplier: int | None = None
     linear_dimming: bool = False
     device_types: tuple[int, ...] = ()
+    supports_color_temperature: bool = False
+    supports_xy: bool = False
+    color_type_tc_active: bool | None = None
+    color_temp_mired: int | None = None
+    color_temp_min_mired: int | None = None
+    color_temp_max_mired: int | None = None
+    xy_color: tuple[float, float] | None = None
     luminaire: DaliLuminaireData | None = None
 
 
@@ -423,6 +437,71 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                     and curve.raw_value is not None
                     and curve.raw_value.as_integer == 1
                 )
+            supports_color_temperature = False
+            supports_xy = False
+            color_type_tc_active = None
+            color_temp_mired = None
+            color_temp_min_mired = None
+            color_temp_max_mired = None
+            xy_color = None
+            if DEVICE_TYPE_COLOUR in device_types:
+                features = await self.driver.send(QueryColourTypeFeatures(gear_address))
+                if features.raw_value is not None and not features.raw_value.error:
+                    supports_color_temperature = features.Tc_capable
+                    supports_xy = features.xy_capable
+                if supports_color_temperature and supports_xy:
+                    status = await self.driver.send(QueryColourStatus(gear_address))
+                    if status.raw_value is not None and not status.raw_value.error:
+                        color_type_tc_active = (
+                            status.colour_type_colour_temperature_Tc_active == 1
+                        )
+                if supports_color_temperature:
+                    color_temp_mired = await self.driver.send(
+                        QueryDT8ColourValue(
+                            gear_address, QueryColourValueDTR.ColourTemperatureTC
+                        )
+                    )
+                    # The gear only accepts values within its configured Tc
+                    # limits; fall back to the physical limits when unset.
+                    color_temp_min_mired = await self.driver.send(
+                        QueryDT8ColourValue(
+                            gear_address,
+                            QueryColourValueDTR.ColourTemperatureTcCoolest,
+                        )
+                    )
+                    if color_temp_min_mired is None:
+                        color_temp_min_mired = await self.driver.send(
+                            QueryDT8ColourValue(
+                                gear_address,
+                                QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest,
+                            )
+                        )
+                    color_temp_max_mired = await self.driver.send(
+                        QueryDT8ColourValue(
+                            gear_address,
+                            QueryColourValueDTR.ColourTemperatureTcWarmest,
+                        )
+                    )
+                    if color_temp_max_mired is None:
+                        color_temp_max_mired = await self.driver.send(
+                            QueryDT8ColourValue(
+                                gear_address,
+                                QueryColourValueDTR.ColourTemperatureTcPhysicalWarmest,
+                            )
+                        )
+                if supports_xy:
+                    x = await self.driver.send(
+                        QueryDT8ColourValue(
+                            gear_address, QueryColourValueDTR.XCoordinate
+                        )
+                    )
+                    y = await self.driver.send(
+                        QueryDT8ColourValue(
+                            gear_address, QueryColourValueDTR.YCoordinate
+                        )
+                    )
+                    if isinstance(x, int) and isinstance(y, int):
+                        xy_color = (x / 65535, y / 65535)
         except (OSError, TimeoutError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -453,6 +532,13 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             extended_fade_time_multiplier=config.extended_fade_time_multiplier,
             linear_dimming=linear_dimming,
             device_types=device_types,
+            supports_color_temperature=supports_color_temperature,
+            supports_xy=supports_xy,
+            color_type_tc_active=color_type_tc_active,
+            color_temp_mired=color_temp_mired,
+            color_temp_min_mired=color_temp_min_mired,
+            color_temp_max_mired=color_temp_max_mired,
+            xy_color=xy_color,
             luminaire=self._luminaire.get(address),
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,

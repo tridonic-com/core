@@ -8,6 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 from dali.command import Command
 from dali.exceptions import MemoryLocationNotImplemented
+from dali.gear.colour import (
+    QueryColourStatus,
+    QueryColourTypeFeatures,
+    QueryColourValueDTR,
+)
 from dali.gear.general import (
     DTR0,
     QueryActualLevel,
@@ -54,7 +59,7 @@ class FakeDaliDriver:
         self.connected = True
         self.closed = False
         self.sent: list[Command] = []
-        self.gears = {0: (6,), 1: (1,), 2: (6,)}
+        self.gears = {0: (6,), 1: (1,), 2: (8,)}
         self.levels = {0: 128, 1: 254, 2: 254}
         self.min_levels = {0: 86, 2: 1}
         self.max_levels: dict[int, int] = {}
@@ -69,6 +74,15 @@ class FakeDaliDriver:
         self.extended_fade: dict[int, tuple[int, int] | None] = {0: (5, 3)}
         self.gear_writes: list[tuple[int, str, int]] = []
         self.linear_dimming = {0: True}
+        self.color_features = {2: (True, True)}
+        self.color_tc_active = {2: True}
+        self.color_values = {
+            QueryColourValueDTR.ColourTemperatureTC: 250,
+            QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest: 153,
+            QueryColourValueDTR.ColourTemperatureTcPhysicalWarmest: 500,
+            QueryColourValueDTR.XCoordinate: 32768,
+            QueryColourValueDTR.YCoordinate: 16384,
+        }
         self.metadata = {
             info.GTIN: 1234567654321,
             info.IdentificationNumber: 1,
@@ -132,6 +146,10 @@ class FakeDaliDriver:
             return await self._run_sequence(msg, progress=progress)
         return await self._send_command(msg)
 
+    async def run_sequence(self, sequence: Generator, progress=None) -> object:
+        """Run a fake sequence (deprecated alias kept for API parity)."""
+        return await self._run_sequence(sequence, progress=progress)
+
     async def _send_command(self, command: Command) -> SimpleNamespace:
         """Return a response for a fake DALI command."""
         self.sent.append(command)
@@ -175,6 +193,22 @@ class FakeDaliDriver:
                 raw_value=SimpleNamespace(
                     error=False, as_integer=(multiplier << 4) | base
                 )
+            )
+        if isinstance(command, QueryColourTypeFeatures):
+            features = self.color_features.get(address)
+            if features is None:
+                return SimpleNamespace(raw_value=None)
+            tc_capable, xy_capable = features
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(error=False),
+                Tc_capable=tc_capable,
+                xy_capable=xy_capable,
+            )
+        if isinstance(command, QueryColourStatus):
+            tc_active = self.color_tc_active.get(address, False)
+            return SimpleNamespace(
+                raw_value=SimpleNamespace(error=False),
+                colour_type_colour_temperature_Tc_active=1 if tc_active else 0,
             )
         if isinstance(command, QueryDimmingCurve):
             value = 1 if self.linear_dimming.get(address, False) else 0
@@ -221,6 +255,10 @@ class FakeDaliDriver:
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
+        if isinstance(first_command, QueryActualLevel):
+            dtr_command = next(sequence)
+            assert isinstance(dtr_command, DTR0)
+            return self.color_values.get(dtr_command.param)
         return self.metadata
 
     def _apply_gear_write(self, address: int, command_name: str, value: int) -> None:
