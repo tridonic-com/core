@@ -14,8 +14,10 @@ GEAR_DEVICE_TYPE_NAMES: dict[int, str] = {
     DEVICE_TYPE_LED: "LED module",
 }
 
+ISSUE_UNADDRESSED_GEAR = "unaddressed_gear"
 ISSUE_BUS_VOLTAGE_ERROR = "bus_voltage_error"
 ISSUE_BUS_OVERLOAD = "bus_overload"
+ISSUE_ADDRESS_COLLISION = "address_collision"
 
 # Registry-identifier infixes. Control gear and control devices have
 # independent DALI short-address spaces, so the kind is encoded to keep a
@@ -30,6 +32,11 @@ def registry_identifier(entry_id: str, address: int, *, input_device: bool) -> s
     return f"{entry_id}_{infix}_{address}"
 
 
+def unaddressed_gear_issue_id(entry_id: str) -> str:
+    """Return the repair issue ID for unaddressed gear on a DALI bus."""
+    return f"{ISSUE_UNADDRESSED_GEAR}_{entry_id}"
+
+
 def bus_voltage_error_issue_id(entry_id: str) -> str:
     """Return the repair issue ID for an unpowered DALI bus."""
     return f"{ISSUE_BUS_VOLTAGE_ERROR}_{entry_id}"
@@ -38,3 +45,8 @@ def bus_voltage_error_issue_id(entry_id: str) -> str:
 def bus_overload_issue_id(entry_id: str) -> str:
     """Return the repair issue ID for an overloaded or undersized bus supply."""
     return f"{ISSUE_BUS_OVERLOAD}_{entry_id}"
+
+
+def address_collision_issue_id(entry_id: str) -> str:
+    """Return the repair issue ID for a DALI short-address collision."""
+    return f"{ISSUE_ADDRESS_COLLISION}_{entry_id}"
