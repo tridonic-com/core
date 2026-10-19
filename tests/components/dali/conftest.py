@@ -2,13 +2,13 @@
 
 import asyncio
 from collections.abc import Generator
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from decimal import Decimal
 from types import GeneratorType, SimpleNamespace
 from typing import TypeVar
 from unittest.mock import AsyncMock, patch
 
-from dali.command import Command
+from dali.command import Command, Response
 from dali.device.general import (
     DTR0 as DeviceDTR0,
     DTR1 as DeviceDTR1,
@@ -23,6 +23,7 @@ from dali.device.general_sensor import (
     UnitOfMeasurement,
 )
 from dali.exceptions import MemoryLocationNotImplemented
+from dali.frame import BackwardFrame
 from dali.gear.colour import (
     QueryColourStatus,
     QueryColourTypeFeatures,
@@ -43,11 +44,11 @@ from dali.gear.general import (
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import (
-    EmergencyFailureStatus,
-    EmergencyFeatures,
     EmergencyInformation,
-    EmergencyMode,
-    EmergencyStatus,
+    QueryEmergencyFailureStatusResponse,
+    QueryEmergencyFeaturesResponse,
+    QueryEmergencyModeResponse,
+    QueryEmergencyStatusResponse,
 )
 from dali.memory import (
     diagnostics as diagnostics_memory,
@@ -59,18 +60,12 @@ from dali.memory import (
 )
 import pytest
 
-_StatusByte = TypeVar("_StatusByte")
+_StatusByte = TypeVar("_StatusByte", bound=Response)
 
 
 def decode_status(cls: type[_StatusByte], byte: int) -> _StatusByte:
-    """Decode a raw status byte into a python-dali status dataclass.
-
-    Mirrors how python-dali decodes the DT1 status bytes: the dataclass fields
-    are declared least-significant bit first.
-    """
-    return cls(
-        **{field.name: bool(byte & (1 << pos)) for pos, field in enumerate(fields(cls))}
-    )
+    """Decode a raw status byte into a python-dali query response object."""
+    return cls(BackwardFrame(byte))
 
 
 @pytest.fixture
@@ -440,16 +435,17 @@ class FakeDaliDriver:
             info_ = dict(self.emergency_info[address])
             return EmergencyInformation(
                 emergency_mode=decode_status(
-                    EmergencyMode, info_.pop("emergency_mode")
+                    QueryEmergencyModeResponse, info_.pop("emergency_mode")
                 ),
                 emergency_features=decode_status(
-                    EmergencyFeatures, info_.pop("emergency_features")
+                    QueryEmergencyFeaturesResponse, info_.pop("emergency_features")
                 ),
                 emergency_failure_status=decode_status(
-                    EmergencyFailureStatus, info_.pop("emergency_failure_status")
+                    QueryEmergencyFailureStatusResponse,
+                    info_.pop("emergency_failure_status"),
                 ),
                 emergency_status=decode_status(
-                    EmergencyStatus, info_.pop("emergency_status")
+                    QueryEmergencyStatusResponse, info_.pop("emergency_status")
                 ),
                 **info_,
             )

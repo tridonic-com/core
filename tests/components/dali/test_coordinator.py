@@ -1,7 +1,6 @@
 """Test the Tridonic DALI coordinator."""
 
 from collections.abc import Callable
-from dataclasses import astuple
 from types import GeneratorType, SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -421,7 +420,7 @@ async def test_emergency_information_is_decoded(
     assert not emergency.features.maintained_control_gear
     assert emergency.status is not None and emergency.status.battery_fully_charged
     assert emergency.failure_status is not None
-    assert not any(astuple(emergency.failure_status))
+    assert not emergency.failure_status.status
     assert emergency.battery_charge == 254
     assert emergency.emergency_level == 254
     assert emergency.duration_test_result == 60

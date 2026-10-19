@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from dali.gear.sequences import EmergencyMode, EmergencyStatus
+from dali.gear.sequences import QueryEmergencyModeResponse, QueryEmergencyStatusResponse
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN, registry_identifier
@@ -37,38 +37,38 @@ def _sensor(
     ("mode", "status", "expected"),
     [
         (
-            decode_status(EmergencyMode, 0b00000010),
-            decode_status(EmergencyStatus, 0),
+            decode_status(QueryEmergencyModeResponse, 0b00000010),
+            decode_status(QueryEmergencyStatusResponse, 0),
             "normal",
         ),
         (
-            decode_status(EmergencyMode, 0b00000100),
-            decode_status(EmergencyStatus, 0),
+            decode_status(QueryEmergencyModeResponse, 0b00000100),
+            decode_status(QueryEmergencyStatusResponse, 0),
             "emergency",
         ),
         (
-            decode_status(EmergencyMode, 0b00001000),
-            decode_status(EmergencyStatus, 0),
+            decode_status(QueryEmergencyModeResponse, 0b00001000),
+            decode_status(QueryEmergencyStatusResponse, 0),
             "extended_emergency",
         ),
         (
-            decode_status(EmergencyMode, 0b00000001),
-            decode_status(EmergencyStatus, 0),
+            decode_status(QueryEmergencyModeResponse, 0b00000001),
+            decode_status(QueryEmergencyStatusResponse, 0),
             "rest",
         ),
         (
-            decode_status(EmergencyMode, 0b00010000),
-            decode_status(EmergencyStatus, 0),
+            decode_status(QueryEmergencyModeResponse, 0b00010000),
+            decode_status(QueryEmergencyStatusResponse, 0),
             "function_test",
         ),
         (
-            decode_status(EmergencyMode, 0b00100000),
-            decode_status(EmergencyStatus, 0),
+            decode_status(QueryEmergencyModeResponse, 0b00100000),
+            decode_status(QueryEmergencyStatusResponse, 0),
             "duration_test",
         ),
         (
-            decode_status(EmergencyMode, 0b00000010),
-            decode_status(EmergencyStatus, 0b00000001),
+            decode_status(QueryEmergencyModeResponse, 0b00000010),
+            decode_status(QueryEmergencyStatusResponse, 0b00000001),
             "inhibit",
         ),
         (None, None, None),
@@ -85,7 +85,9 @@ def _sensor(
     ],
 )
 def test_emergency_mode_decoding(
-    mode: EmergencyMode | None, status: EmergencyStatus | None, expected: str | None
+    mode: QueryEmergencyModeResponse | None,
+    status: QueryEmergencyStatusResponse | None,
+    expected: str | None,
 ) -> None:
     """Test the operating mode is derived from the mode and status bytes."""
     data = DaliEmergencyData(mode=mode, status=status)

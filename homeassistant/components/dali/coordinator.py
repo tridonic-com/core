@@ -59,12 +59,12 @@ from dali.gear.general import (
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import (
-    EmergencyFailureStatus,
-    EmergencyFeatures,
-    EmergencyMode,
-    EmergencyStatus,
     QueryDT8ColourValue,
+    QueryEmergencyFailureStatusResponse,
+    QueryEmergencyFeaturesResponse,
     QueryEmergencyInformation,
+    QueryEmergencyModeResponse,
+    QueryEmergencyStatusResponse,
 )
 from dali.memory import (
     diagnostics as diagnostics_memory,
@@ -293,10 +293,10 @@ class DaliEmergencyData:
     memory-bank-208 diagnostics.
     """
 
-    mode: EmergencyMode | None = None
-    features: EmergencyFeatures | None = None
-    failure_status: EmergencyFailureStatus | None = None
-    status: EmergencyStatus | None = None
+    mode: QueryEmergencyModeResponse | None = None
+    features: QueryEmergencyFeaturesResponse | None = None
+    failure_status: QueryEmergencyFailureStatusResponse | None = None
+    status: QueryEmergencyStatusResponse | None = None
     battery_charge: int | None = None
     emergency_level: int | None = None
     duration_test_result: int | None = None

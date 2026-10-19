@@ -2,7 +2,11 @@
 
 from unittest.mock import patch
 
-from dali.gear.sequences import EmergencyFailureStatus, EmergencyMode, EmergencyStatus
+from dali.gear.sequences import (
+    QueryEmergencyFailureStatusResponse,
+    QueryEmergencyModeResponse,
+    QueryEmergencyStatusResponse,
+)
 import pytest
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
@@ -39,14 +43,22 @@ def _binary_sensor(
 @pytest.mark.parametrize(
     ("byte", "attr", "expected"),
     [
-        (decode_status(EmergencyStatus, 0b00001000), "battery_fully_charged", True),
-        (decode_status(EmergencyStatus, 0b00000000), "battery_fully_charged", False),
+        (
+            decode_status(QueryEmergencyStatusResponse, 0b00001000),
+            "battery_fully_charged",
+            True,
+        ),
+        (
+            decode_status(QueryEmergencyStatusResponse, 0b00000000),
+            "battery_fully_charged",
+            False,
+        ),
         (None, "battery_fully_charged", None),
     ],
     ids=["set", "clear", "no_byte"],
 )
 def test_status_bit_helper(
-    byte: EmergencyStatus | None, attr: str, expected: bool | None
+    byte: QueryEmergencyStatusResponse | None, attr: str, expected: bool | None
 ) -> None:
     """Test the status-bit helper reports set, clear and absent bytes."""
     value_fn = _status_bit(lambda data: byte, attr)
@@ -58,47 +70,63 @@ def test_status_bit_helper(
     [
         (
             "battery_fully_charged",
-            DaliEmergencyData(status=decode_status(EmergencyStatus, 0b00001000)),
+            DaliEmergencyData(
+                status=decode_status(QueryEmergencyStatusResponse, 0b00001000)
+            ),
             True,
         ),
         (
             "inhibit_mode",
-            DaliEmergencyData(status=decode_status(EmergencyStatus, 0b00001000)),
+            DaliEmergencyData(
+                status=decode_status(QueryEmergencyStatusResponse, 0b00001000)
+            ),
             False,
         ),
         (
             "function_test_done",
-            DaliEmergencyData(status=decode_status(EmergencyStatus, 0b00000010)),
+            DaliEmergencyData(
+                status=decode_status(QueryEmergencyStatusResponse, 0b00000010)
+            ),
             True,
         ),
         (
             "hardwired_switch_on",
-            DaliEmergencyData(mode=decode_status(EmergencyMode, 0b10000000)),
+            DaliEmergencyData(
+                mode=decode_status(QueryEmergencyModeResponse, 0b10000000)
+            ),
             True,
         ),
         (
             "hardwired_inhibit_active",
-            DaliEmergencyData(mode=decode_status(EmergencyMode, 0b00000010)),
+            DaliEmergencyData(
+                mode=decode_status(QueryEmergencyModeResponse, 0b00000010)
+            ),
             False,
         ),
         (
             "circuit_failure",
             DaliEmergencyData(
-                failure_status=decode_status(EmergencyFailureStatus, 0b00000001)
+                failure_status=decode_status(
+                    QueryEmergencyFailureStatusResponse, 0b00000001
+                )
             ),
             True,
         ),
         (
             "duration_test_failed",
             DaliEmergencyData(
-                failure_status=decode_status(EmergencyFailureStatus, 0b10000000)
+                failure_status=decode_status(
+                    QueryEmergencyFailureStatusResponse, 0b10000000
+                )
             ),
             True,
         ),
         (
             "battery_failure",
             DaliEmergencyData(
-                failure_status=decode_status(EmergencyFailureStatus, 0b00000000)
+                failure_status=decode_status(
+                    QueryEmergencyFailureStatusResponse, 0b00000000
+                )
             ),
             False,
         ),

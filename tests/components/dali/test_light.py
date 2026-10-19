@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from dali.address import GearShort
 from dali.gear.general import DAPC
-from dali.gear.sequences import EmergencyFeatures
+from dali.gear.sequences import QueryEmergencyFeaturesResponse
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
@@ -101,7 +101,7 @@ async def test_light_properties(
             DaliGearData(
                 device_types=(1,),
                 emergency=DaliEmergencyData(
-                    features=decode_status(EmergencyFeatures, 0b00000010)
+                    features=decode_status(QueryEmergencyFeaturesResponse, 0b00000010)
                 ),
             ),
             True,
@@ -110,7 +110,7 @@ async def test_light_properties(
             DaliGearData(
                 device_types=(1,),
                 emergency=DaliEmergencyData(
-                    features=decode_status(EmergencyFeatures, 0b00000001)
+                    features=decode_status(QueryEmergencyFeaturesResponse, 0b00000001)
                 ),
             ),
             False,
