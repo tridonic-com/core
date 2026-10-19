@@ -2711,7 +2711,7 @@ python-bsblan==6.1.8
 python-citybikes==0.3.3
 
 # homeassistant.components.dali
-python-dali==0.12
+python-dali==0.14
 
 # homeassistant.components.digital_ocean
 python-digitalocean==1.13.2
