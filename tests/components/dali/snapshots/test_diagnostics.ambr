@@ -1,0 +1,42 @@
+# serializer version: 1
+# name: test_entry_diagnostics
+  dict({
+    'entry_data': dict({
+      'device': '/dev/ttyACM0',
+    }),
+    'gears': dict({
+      '0': dict({
+        'batch_no': None,
+        'device_types': list([
+          6,
+        ]),
+        'firmware_version': None,
+        'gtin': None,
+        'hardware_version': None,
+        'identification_number': None,
+        'last_memory_bank': None,
+        'level': 64,
+        'linear_dimming': True,
+        'max_level': 254,
+        'min_level': 86,
+        'serial_no': None,
+      }),
+      '2': dict({
+        'batch_no': None,
+        'device_types': list([
+          6,
+        ]),
+        'firmware_version': None,
+        'gtin': None,
+        'hardware_version': None,
+        'identification_number': None,
+        'last_memory_bank': None,
+        'level': 255,
+        'linear_dimming': False,
+        'max_level': 254,
+        'min_level': 1,
+        'serial_no': None,
+      }),
+    }),
+  })
+# ---

@@ -1,0 +1,68 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "no_serial_ports": "No serial ports were found. Connect the Lunatone USB-DALI2 interface, then try again."
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]"
+    },
+    "step": {
+      "bus_power": {
+        "data": {
+          "bus_power": "Provide DALI bus power"
+        },
+        "data_description": {
+          "bus_power": "The interface can power the DALI bus itself. Enable this only when no separate DALI power supply is connected, otherwise leave it off to avoid two power supplies on the bus."
+        },
+        "description": "This interface has an integrated DALI bus power supply. Switch it on to power the bus?",
+        "title": "DALI bus power"
+      },
+      "usb_confirm": {
+        "title": "USB-DALI2 interface"
+      },
+      "user": {
+        "data": {
+          "device": "Serial port"
+        },
+        "data_description": {
+          "device": "The serial port that the Lunatone USB-DALI2 interface is connected to."
+        },
+        "description": "Select the serial port that the Lunatone USB-DALI2 interface is connected to.",
+        "title": "USB-DALI2 interface"
+      }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Unable to connect to the DALI interface"
+    },
+    "communication_error": {
+      "message": "Unable to communicate with the DALI gear"
+    },
+    "connection_lost": {
+      "message": "The connection to the DALI interface was lost"
+    },
+    "update_failed": {
+      "message": "Unable to communicate with the DALI interface"
+    }
+  },
+  "issues": {
+    "bus_overload": {
+      "description": "The DALI bus on {title} dropped below the voltage needed to communicate, even though its power supply is switched on. The bus power supply is most likely overloaded or undersized for the connected control gear and sensors. A long or faulty bus cable can have the same effect.\n\nUse a DALI bus power supply with a higher current rating, reduce the number of devices on the bus, or check the bus wiring. Home Assistant keeps retrying and clears this issue once the bus is stable again.",
+      "title": "DALI bus power supply overloaded on {title}"
+    },
+    "bus_voltage_error": {
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "description": "The DALI bus on {title} has no power, so Home Assistant cannot reach any devices. This interface has an integrated power supply that can power the bus.\n\nSelect **Switch on bus power**, but only when no separate DALI power supply is connected, otherwise leave it off to avoid two power supplies on the bus.",
+            "submit": "Switch on bus power",
+            "title": "Power the DALI bus"
+          }
+        }
+      },
+      "title": "No power on the DALI bus on {title}"
+    }
+  }
+}

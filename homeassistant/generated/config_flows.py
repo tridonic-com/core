@@ -150,6 +150,7 @@ FLOWS = {
         "crownstone",
         "cync",
         "daikin",
+        "dali",
         "data_grand_lyon",
         "datadog",
         "deako",
