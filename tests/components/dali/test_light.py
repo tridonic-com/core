@@ -4,11 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 from dali.address import GearShort
 from dali.gear.general import DAPC
+from dali.gear.sequences import QueryEmergencyFeaturesResponse
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import (
     DaliCoordinator,
+    DaliEmergencyData,
     DaliGearData,
     _brightness_to_dali_level,
     _dali_level_to_brightness,
@@ -20,7 +22,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
-from .conftest import FakeDaliDriver
+from .conftest import FakeDaliDriver, decode_status
 
 from tests.common import MockConfigEntry
 
@@ -96,14 +98,32 @@ async def test_light_properties(
     [
         (DaliGearData(device_types=(6,)), True),
         (DaliGearData(device_types=(8,)), True),
-        (DaliGearData(device_types=()), False),
+        (
+            DaliGearData(
+                device_types=(1,),
+                emergency=DaliEmergencyData(
+                    features=decode_status(QueryEmergencyFeaturesResponse, 0b00000010)
+                ),
+            ),
+            True,
+        ),
+        (
+            DaliGearData(
+                device_types=(1,),
+                emergency=DaliEmergencyData(
+                    features=decode_status(QueryEmergencyFeaturesResponse, 0b00000001)
+                ),
+            ),
+            False,
+        ),
+        (DaliGearData(device_types=(1,), emergency=None), False),
     ],
-    ids=["dt6", "dt8", "non_led"],
+    ids=["dt6", "dt8", "dt1_maintained", "dt1_non_maintained", "dt1_no_data"],
 )
-def test_is_light_matches_led_or_colour_gear(
+def test_is_light_filters_non_maintained_emergency(
     gear: DaliGearData, expected: bool
 ) -> None:
-    """Test only dimmable (DT6) or colour (DT8) gear become lights."""
+    """Test only dimmable, colour, or maintained emergency gear become lights."""
     assert _is_light(gear) is expected
 
 

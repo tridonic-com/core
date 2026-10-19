@@ -1,9 +1,9 @@
 """Test the Tridonic DALI coordinator."""
 
-from types import SimpleNamespace
+from types import GeneratorType, SimpleNamespace
 from unittest.mock import patch
 
-from dali.exceptions import TransmissionError
+from dali.exceptions import DALISequenceError, TransmissionError
 from dali.gear.general import QueryControlGearPresent
 import pytest
 
@@ -266,17 +266,39 @@ async def test_device_info_reports_the_serial_number(
     assert device_info["serial_number"] == "080706"
 
 
+@pytest.mark.parametrize(
+    ("device_types", "expected_model"),
+    [
+        pytest.param(
+            (6,),
+            "DALI control gear – LED module (DT6, IEC 62386-207) (address 5)",
+            id="led",
+        ),
+        pytest.param(
+            (1,),
+            "DALI control gear – Self-contained emergency lighting "
+            "(DT1, IEC 62386-202) (address 5)",
+            id="emergency",
+        ),
+        pytest.param(
+            (6, 8),
+            "DALI control gear – LED module (DT6, IEC 62386-207), "
+            "Colour control (DT8, IEC 62386-209) (address 5)",
+            id="led_and_colour",
+        ),
+    ],
+)
 async def test_device_info_model_exposes_gear_device_type(
     coordinator: DaliCoordinator,
+    device_types: tuple[int, ...],
+    expected_model: str,
 ) -> None:
-    """Test a gear's model names its device type and IEC 62386 part."""
-    coordinator.data = {5: DaliGearData(device_types=(6,))}
+    """Test a gear's model names its device types and IEC 62386 parts."""
+    coordinator.data = {5: DaliGearData(device_types=device_types)}
 
     device_info = coordinator.device_info("entry", "USB-DALI2", 5)
 
-    assert device_info["model"] == (
-        "DALI control gear – LED module (DT6, IEC 62386-207) (address 5)"
-    )
+    assert device_info["model"] == expected_model
 
 
 async def test_device_info_uses_short_usb_label(
@@ -294,3 +316,59 @@ async def test_device_info_uses_short_usb_label(
     device_info = coordinator.device_info(entry.entry_id, entry.title, 0)
 
     assert device_info["name"] == "DALI-2_USB_PS_000000024994/0 (gear)"
+
+
+async def test_emergency_information_is_decoded(
+    coordinator: DaliCoordinator,
+) -> None:
+    """Test DT1 gear is queried for emergency status, measurements and MB208."""
+    gear = await coordinator._query_gear(1)
+
+    assert gear is not None
+    assert gear.emergency is not None
+    emergency = gear.emergency
+    assert emergency.mode is not None and emergency.mode.normal_mode
+    assert emergency.features is not None
+    assert emergency.features.integral_emergency_control_gear
+    assert not emergency.features.maintained_control_gear
+    assert emergency.status is not None and emergency.status.battery_fully_charged
+    assert emergency.failure_status is not None
+    assert not emergency.failure_status.status
+    assert emergency.battery_charge == 254
+    assert emergency.emergency_level == 254
+    assert emergency.duration_test_result == 60
+    assert emergency.rated_duration == 90
+    assert emergency.lamp_emergency_time == 5
+    assert emergency.lamp_total_operation_time == 100
+    assert emergency.control_gear_temperature == 25
+    assert emergency.average_power_during_charging == 5.0
+    assert emergency.start_function_test_counter == 12
+    assert emergency.controllable is False
+
+
+async def test_emergency_memory_failure_leaves_diagnostics_unset(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test an MB208 read failure keeps the status data but drops diagnostics."""
+    original_send = fake_dali_driver.send
+
+    async def send(
+        msg: object, *, priority: int = 5, progress: object = None
+    ) -> object:
+        if (
+            isinstance(msg, GeneratorType)
+            and msg.__name__ == "read_all"
+            and msg.gi_frame.f_locals.get("self").address == 208
+        ):
+            msg.close()
+            raise DALISequenceError
+        return await original_send(msg, priority=priority, progress=progress)
+
+    with patch.object(fake_dali_driver, "send", side_effect=send):
+        gear = await coordinator._query_gear(1)
+
+    assert gear is not None
+    assert gear.emergency is not None
+    assert gear.emergency.battery_charge == 254
+    assert gear.emergency.control_gear_temperature is None
+    assert gear.emergency.start_function_test_counter is None

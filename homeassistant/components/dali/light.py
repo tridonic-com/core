@@ -58,11 +58,13 @@ async def async_setup_entry(
 def _is_light(gear: DaliGearData) -> bool:
     """Return whether a gear should be exposed as a light.
 
-    Dimmable (DT6) and colour (DT8) gear are always lights.
+    Dimmable (DT6) and colour (DT8) gear are always lights. A pure emergency
+    (DT1) gear is only a light when it is a maintained type that can be driven
+    from the mains; a non-maintained emergency gear has no normal-mode output.
     """
-    return (
-        DEVICE_TYPE_LED in gear.device_types or DEVICE_TYPE_COLOUR in gear.device_types
-    )
+    if DEVICE_TYPE_LED in gear.device_types or DEVICE_TYPE_COLOUR in gear.device_types:
+        return True
+    return gear.emergency is not None and gear.emergency.controllable
 
 
 class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):

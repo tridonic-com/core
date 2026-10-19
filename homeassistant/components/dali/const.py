@@ -5,13 +5,19 @@ DOMAIN = "dali"
 CONF_BUS_POWER = "bus_power"
 
 # IEC 62386 control-gear device types the integration handles.
+DEVICE_TYPE_EMERGENCY = 1
 DEVICE_TYPE_LED = 6
 DEVICE_TYPE_COLOUR = 8
-SUPPORTED_GEAR_DEVICE_TYPES = (DEVICE_TYPE_LED, DEVICE_TYPE_COLOUR)
+SUPPORTED_GEAR_DEVICE_TYPES = (
+    DEVICE_TYPE_LED,
+    DEVICE_TYPE_COLOUR,
+    DEVICE_TYPE_EMERGENCY,
+)
 
 # Human-readable names for each control-gear device type. The IEC 62386 part
 # specifying a device type DTn is part 2(01+n) (e.g. DT6 → IEC 62386-207).
 GEAR_DEVICE_TYPE_NAMES: dict[int, str] = {
+    DEVICE_TYPE_EMERGENCY: "Self-contained emergency lighting",
     DEVICE_TYPE_LED: "LED module",
     DEVICE_TYPE_COLOUR: "Colour control",
 }

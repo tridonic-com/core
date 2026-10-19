@@ -28,7 +28,7 @@ from tests.common import MockConfigEntry, async_fire_time_changed
 async def test_setup_and_unload_entry(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test setup scans and retains the supported DT6 control gear."""
+    """Test setup scans and retains DT6, DT8 and DT1 (emergency) control gear."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_DEVICE: "/dev/ttyACM0"},
@@ -47,7 +47,7 @@ async def test_setup_and_unload_entry(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
 
-    assert entry.runtime_data.data.keys() == {0, 2}
+    assert entry.runtime_data.data.keys() == {0, 1, 2}
     assert entry.runtime_data.data[0].min_level == 86
     assert forward_setups.await_count == 1
 
@@ -59,7 +59,7 @@ async def test_setup_and_unload_entry(
 async def test_setup_entry_with_no_supported_gear(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test setup succeeds when the DALI bus has no DT6 gear."""
+    """Test setup succeeds when the DALI bus has no DT6 or DT8 gear."""
     fake_dali_driver.gears = {}
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -240,7 +240,7 @@ async def test_lost_interface_is_reconnected(
 
     assert entry.state is ConfigEntryState.LOADED
     assert fake_dali_driver.is_connected
-    assert entry.runtime_data.data.keys() == {0, 2}
+    assert entry.runtime_data.data.keys() == {0, 1, 2}
 
 
 async def test_lost_interface_retries_while_it_stays_away(

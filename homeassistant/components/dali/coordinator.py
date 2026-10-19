@@ -33,9 +33,17 @@ from dali.gear.general import (
     SetShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
-from dali.gear.sequences import QueryDT8ColourValue
+from dali.gear.sequences import (
+    QueryDT8ColourValue,
+    QueryEmergencyFailureStatusResponse,
+    QueryEmergencyFeaturesResponse,
+    QueryEmergencyInformation,
+    QueryEmergencyModeResponse,
+    QueryEmergencyStatusResponse,
+)
 from dali.memory import (
     diagnostics as diagnostics_memory,
+    emergency,
     energy,
     info,
     maintenance,
@@ -55,6 +63,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     CONF_BUS_POWER,
     DEVICE_TYPE_COLOUR,
+    DEVICE_TYPE_EMERGENCY,
     DEVICE_TYPE_LED,
     DOMAIN,
     GEAR_DEVICE_TYPE_NAMES,
@@ -245,6 +254,59 @@ class DaliDiagnosticsData:
 
 
 @dataclass(frozen=True, slots=True)
+class DaliEmergencyData:
+    """Status and measurement data for one DT1 (IEC 62386-202) emergency gear.
+
+    The four status bytes are decoded into their named bits by python-dali; the
+    measurement values are plain integers as reported by the gear (None where
+    the gear answers MASK or does not answer). The remaining fields are the
+    memory-bank-208 diagnostics.
+    """
+
+    mode: QueryEmergencyModeResponse | None = None
+    features: QueryEmergencyFeaturesResponse | None = None
+    failure_status: QueryEmergencyFailureStatusResponse | None = None
+    status: QueryEmergencyStatusResponse | None = None
+    battery_charge: int | None = None
+    emergency_level: int | None = None
+    duration_test_result: int | None = None
+    lamp_emergency_time: int | None = None
+    lamp_total_operation_time: int | None = None
+    rated_duration: int | None = None
+    control_gear_temperature: int | None = None
+    control_gear_max_reference_temperature: int | None = None
+    min_control_gear_temperature_total: int | None = None
+    max_control_gear_temperature_total: int | None = None
+    average_power_during_charging: float | None = None
+    average_power_during_maintenance: float | None = None
+    battery_recharge_time: int | None = None
+    function_test_time: int | None = None
+    battery_failure_counter: int | None = None
+    lamp_emergency_time_total: int | None = None
+    lamp_emergency_time_current_battery: int | None = None
+    battery_connected_time_total: int | None = None
+    emergency_mode_counter_total: int | None = None
+    rest_mode_counter: int | None = None
+    start_function_test_counter: int | None = None
+    start_duration_test_counter_total: int | None = None
+    function_test_failed_counter_total: int | None = None
+    duration_test_failed_counter_total: int | None = None
+
+    @property
+    def controllable(self) -> bool:
+        """Return whether the gear can be driven as a normal (maintained) light.
+
+        The features byte reports the gear type; a maintained or switched-
+        maintained gear keeps the lamp lit from the mains and so behaves as a
+        dimmable light, whereas a non-maintained gear only lights in emergency.
+        """
+        return self.features is not None and (
+            self.features.maintained_control_gear
+            or self.features.switched_maintained_control_gear
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DaliGearConfig:
     """Writable IEC 62386-102 configuration variables of one control gear.
 
@@ -282,6 +344,7 @@ class DaliGearData(DaliDeviceData):
     color_temp_min_mired: int | None = None
     color_temp_max_mired: int | None = None
     xy_color: tuple[float, float] | None = None
+    emergency: DaliEmergencyData | None = None
     luminaire: DaliLuminaireData | None = None
     maintenance: DaliMaintenanceData | None = None
     diagnostics: DaliDiagnosticsData | None = None
@@ -579,6 +642,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                     )
                     if isinstance(x, int) and isinstance(y, int):
                         xy_color = (x / 65535, y / 65535)
+            emergency_data = None
+            if DEVICE_TYPE_EMERGENCY in device_types:
+                emergency_data = await self._query_emergency(gear_address, fast=fast)
         except (OSError, TimeoutError) as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
@@ -616,6 +682,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             color_temp_min_mired=color_temp_min_mired,
             color_temp_max_mired=color_temp_max_mired,
             xy_color=xy_color,
+            emergency=emergency_data,
             luminaire=self._luminaire.get(address),
             maintenance=self._maintenance.get(address),
             diagnostics=self._diagnostics.get(address),
@@ -658,6 +725,91 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             fade_rate=None if fade is None else fade & 0x0F,
             extended_fade_time_base=base,
             extended_fade_time_multiplier=multiplier,
+        )
+
+    async def _query_emergency(
+        self, gear_address: GearShort, *, fast: bool = False
+    ) -> DaliEmergencyData:
+        """Read DT1 (IEC 62386-202) status, measurements and MB208 diagnostics.
+
+        The four status bytes and the measurement values come from a single
+        ``QueryEmergencyInformation`` transaction; the slower memory-bank-208
+        diagnostics are read separately and a bank a gear does not implement
+        simply leaves those fields unset. ``fast`` skips the memory-bank-208
+        read entirely so the initial refresh is not held up by it; the periodic
+        refresh fills the diagnostics in afterwards.
+        """
+        info_ = await self.driver.send(QueryEmergencyInformation(gear_address))
+        memory: dict[type, Any] = {}
+        if not fast:
+            try:
+                memory = await self.driver.send(
+                    emergency.BANK_208.read_all(gear_address)
+                )
+            except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
+                memory = {}
+
+        return DaliEmergencyData(
+            mode=info_.emergency_mode,
+            features=info_.emergency_features,
+            failure_status=info_.emergency_failure_status,
+            status=info_.emergency_status,
+            battery_charge=info_.battery_charge,
+            emergency_level=info_.emergency_level,
+            duration_test_result=info_.duration_test_result,
+            lamp_emergency_time=info_.lamp_emergency_time,
+            lamp_total_operation_time=info_.lamp_total_operation_time,
+            rated_duration=info_.rated_duration,
+            control_gear_temperature=_memory_int(
+                memory.get(emergency.ControlGearTemperature)
+            ),
+            control_gear_max_reference_temperature=_memory_int(
+                memory.get(emergency.ControlGearMaxReferenceTemperature)
+            ),
+            min_control_gear_temperature_total=_memory_int(
+                memory.get(emergency.MinControlGearTemperatureTotal)
+            ),
+            max_control_gear_temperature_total=_memory_int(
+                memory.get(emergency.MaxControlGearTemperatureTotal)
+            ),
+            average_power_during_charging=_memory_float(
+                memory.get(emergency.AveragePowerDuringCharging)
+            ),
+            average_power_during_maintenance=_memory_float(
+                memory.get(emergency.AveragePowerDuringMaintenance)
+            ),
+            battery_recharge_time=_memory_int(
+                memory.get(emergency.BatteryRechargeTime)
+            ),
+            function_test_time=_memory_int(memory.get(emergency.FunctionTestTime)),
+            battery_failure_counter=_memory_int(
+                memory.get(emergency.BatteryFailureCounter)
+            ),
+            lamp_emergency_time_total=_memory_int(
+                memory.get(emergency.LampEmergencyTimeTotal)
+            ),
+            lamp_emergency_time_current_battery=_memory_int(
+                memory.get(emergency.LampEmergencyTimeCurrentBattery)
+            ),
+            battery_connected_time_total=_memory_int(
+                memory.get(emergency.BatteryConnectedTimeTotal)
+            ),
+            emergency_mode_counter_total=_memory_int(
+                memory.get(emergency.EmergencyModeCounterTotal)
+            ),
+            rest_mode_counter=_memory_int(memory.get(emergency.RestModeCounter)),
+            start_function_test_counter=_memory_int(
+                memory.get(emergency.StartFunctionTestCounter)
+            ),
+            start_duration_test_counter_total=_memory_int(
+                memory.get(emergency.StartDurationTestCounterTotal)
+            ),
+            function_test_failed_counter_total=_memory_int(
+                memory.get(emergency.FunctionTestFailedCounterTotal)
+            ),
+            duration_test_failed_counter_total=_memory_int(
+                memory.get(emergency.DurationTestFailedCounterTotal)
+            ),
         )
 
     async def _query_metadata(self, address: GearShort) -> DaliDeviceData:
