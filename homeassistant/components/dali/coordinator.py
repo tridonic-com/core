@@ -1,7 +1,7 @@
 """Data update coordinator for the Tridonic DALI integration."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 from decimal import Decimal
@@ -18,10 +18,19 @@ from dali.address import (
 )
 from dali.device.general import (
     DTR0,
+    DTR1,
+    DTR2,
     EnableInstance,
     EventScheme,
     QueryMissingShortAddress as QueryMissingDeviceShortAddress,
+    QueryResolution,
+    SetEventFilter,
     SetEventScheme,
+)
+from dali.device.general_sensor import (
+    InstanceEventFilter,
+    MeasurementVariable,
+    QueryMeasurementVariable,
 )
 from dali.device.sequences import Commissioning as CommissionDevices
 from dali.driver.serial import DriverLubaRs232
@@ -127,6 +136,11 @@ PART_251_CONTENT_FORMAT = 0x0003
 # where IEC 62386-102 has a plain minor version.
 TRIDONIC_GTIN_PREFIX = "9006210"
 
+# Sensor metadata is read once and cached, so a single corrupted-but-parseable
+# response skews every later measurement. Confirm each value with repeated reads.
+METADATA_QUERY_ATTEMPTS = 3
+# Widest input-value resolution IEC 62386-306 defines, in bits.
+MAX_SENSOR_RESOLUTION = 32
 # A yes/no query is the reliable collision probe: IEC 62386 defines that two or
 # more gear answering "yes" at once garble the backward frame into a framing
 # error, whatever their data. A data query (e.g. the random address) would not,
@@ -370,6 +384,17 @@ class DaliGearData(DaliDeviceData):
     active_energy: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DaliGeneralSensorData(DaliDeviceData):
+    """State and identification data for one Part 306 general sensor."""
+
+    quantity_name: int | None = None
+    unit_of_measurement: int | None = None
+    resolution: int | None = None
+    magnitude: int | None = None
+    input_signal_signed: bool | None = None
+
+
 class DaliMetadataStore(Store[dict[str, Any]]):
     """Store for the cached memory bank 0 identification data."""
 
@@ -421,6 +446,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._diagnostics: dict[int, DaliDiagnosticsData] = {}
         self._energy: dict[int, float] = {}
         self._gear_config: dict[int, DaliGearConfig] = {}
+        self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
         self._configured_instances: set[tuple[int, int]] = set()
         self._store: Store[dict[str, Any]] = DaliMetadataStore(
             hass, STORAGE_VERSION, f"{DOMAIN}.{config_entry.entry_id}_metadata"
@@ -447,6 +473,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             self._luminaire[int(address)] = DaliLuminaireData(**values)
         for address, values in stored.get("maintenance", {}).items():
             self._maintenance[int(address)] = DaliMaintenanceData(**values)
+        for key, values in stored.get("sensor", {}).items():
+            address, instance = (int(part) for part in key.split(":"))
+            self.input_devices[(address, instance)] = DaliGeneralSensorData(**values)
 
     def _persist_metadata(self) -> None:
         """Schedule a debounced save of the identification metadata caches."""
@@ -471,6 +500,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             "maintenance": {
                 str(address): asdict(data)
                 for address, data in self._maintenance.items()
+            },
+            "sensor": {
+                f"{address}:{instance}": asdict(data)
+                for (address, instance), data in self.input_devices.items()
             },
         }
 
@@ -1125,6 +1158,108 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             ),
         )
 
+    async def _query_general_sensor(
+        self, address: DeviceShort, instance: int
+    ) -> DaliGeneralSensorData:
+        """Return metadata for a Part 306 general sensor instance."""
+        instance_address = InstanceNumber(instance)
+        metadata = self._device_metadata.get(address.address)
+        if metadata is None:
+            metadata = await self._query_metadata(address)
+            self._device_metadata[address.address] = metadata
+
+        try:
+            resolution = await self._query_stable_value(
+                lambda: self.driver.send(QueryResolution(address, instance_address)),
+                valid_range=(1, MAX_SENSOR_RESOLUTION),
+            )
+            input_signal_signed = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.INPUT_SIGNAL_SIGNED
+                )
+            )
+            unit_of_measurement = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.UNIT_OF_MEASUREMENT
+                )
+            )
+            quantity_name = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.QUANTITY_NAME
+                )
+            )
+            magnitude = await self._query_stable_value(
+                lambda: self._query_measurement_variable(
+                    address, instance_address, MeasurementVariable.MAGNITUDE
+                )
+            )
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+
+        return DaliGeneralSensorData(
+            quantity_name=quantity_name,
+            unit_of_measurement=unit_of_measurement,
+            resolution=resolution,
+            magnitude=magnitude,
+            input_signal_signed=bool(input_signal_signed)
+            if input_signal_signed is not None
+            else None,
+            gtin=metadata.gtin,
+            identification_number=metadata.identification_number,
+            serial_no=metadata.serial_no,
+            batch_no=metadata.batch_no,
+            firmware_version=metadata.firmware_version,
+            hardware_version=metadata.hardware_version,
+            last_memory_bank=metadata.last_memory_bank,
+        )
+
+    async def _query_measurement_variable(
+        self,
+        address: DeviceShort,
+        instance: InstanceNumber,
+        variable: MeasurementVariable,
+    ) -> object:
+        """Query a Part 306 measurement variable."""
+        await self.driver.send(DTR0(variable))
+        return await self.driver.send(QueryMeasurementVariable(address, instance))
+
+    async def _query_stable_value(
+        self,
+        query: Callable[[], Awaitable[object]],
+        *,
+        valid_range: tuple[int, int] | None = None,
+    ) -> int | None:
+        """Return a DALI value confirmed by two consecutive, in-range reads.
+
+        A single corrupted DALI frame can still parse as a valid number; cached
+        once as sensor metadata it silently skews every later measurement (seen
+        in practice as a temperature reading stuck roughly 290 C too high until
+        the next restart). Require two consecutive reads to agree so a one-off
+        bus error is rejected rather than latched. When ``valid_range`` is given
+        the value must also be present and within it, so an out-of-range reading
+        can never be confirmed.
+        """
+        previous: int | None = None
+        have_previous = False
+        for _ in range(METADATA_QUERY_ATTEMPTS):
+            value = _response_value(await query())
+            if valid_range is not None and (
+                value is None or not valid_range[0] <= value <= valid_range[1]
+            ):
+                have_previous = False
+                continue
+            if have_previous and value == previous:
+                return value
+            previous = value
+            have_previous = True
+        raise UpdateFailed(
+            translation_domain=DOMAIN,
+            translation_key="update_failed",
+        )
+
     async def _configure_instance_event_scheme(
         self, address: DeviceShort, instance: InstanceNumber
     ) -> None:
@@ -1147,17 +1282,32 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 translation_key="update_failed",
             ) from err
 
+    async def _enable_measured_value_events(
+        self, address: DeviceShort, instance: InstanceNumber
+    ) -> None:
+        """Enable measured-value reporting for a Part 306 sensor instance."""
+        try:
+            await self.driver.send(DTR2(0))
+            await self.driver.send(DTR1(0))
+            await self.driver.send(DTR0(InstanceEventFilter.measured_value))
+            await self.driver.send(SetEventFilter(address, instance))
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+
     async def async_discover_control_devices(self, *, fast: bool = False) -> None:
         """Enumerate control devices and configure their event reporting.
 
-        Runs the quiescent autodiscover scan, then reads identification data and
-        switches each new instance to the Device/Instance event scheme so its
-        events carry a short address. autodiscover only adds to the instance map,
-        so this folds in a device missed at connect or added since the last run.
-        It silences input devices for the duration of the scan, so it runs at
-        startup, on demand, and after commissioning rather than on the periodic
-        bus poll. ``fast`` defers the control-device identification reads so the
-        initial refresh is not held up.
+        Runs the quiescent autodiscover scan, then reads identification data
+        and enables measured-value reporting for any new Part 306 instance.
+        autodiscover only adds to the instance map, so this folds in a device
+        missed at connect or added since the last run. It silences input
+        devices for the duration of the scan, so it runs at startup, on demand,
+        and after commissioning rather than on the periodic bus poll. ``fast``
+        defers the control-device identification reads so the initial refresh is
+        not held up; sensor metadata is still read as it defines the entity.
         """
         try:
             await self.driver.send(self.driver.dev_inst_map.autodiscover())
@@ -1180,12 +1330,23 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 self._device_metadata[address_int] = metadata
                 self._apply_device_metadata(address_int, metadata, input_device=True)
                 self._persist_metadata()
-        for address, instance, _instance_type in self.device_instances:
+        for address, instance, instance_type in self.device_instances:
             key = (address, instance)
+            device_short = DeviceShort(address)
+            instance_number = InstanceNumber(instance)
+            if instance_type == 6 and key not in self.input_devices:
+                self.input_devices[key] = await self._query_general_sensor(
+                    device_short, instance
+                )
+                self._persist_metadata()
             if key not in self._configured_instances:
                 await self._configure_instance_event_scheme(
-                    DeviceShort(address), InstanceNumber(instance)
+                    device_short, instance_number
                 )
+                if instance_type == 6:
+                    await self._enable_measured_value_events(
+                        device_short, instance_number
+                    )
                 self._configured_instances.add(key)
         self.async_update_listeners()
 

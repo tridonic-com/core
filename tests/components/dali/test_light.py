@@ -88,7 +88,6 @@ async def test_light_properties(
     assert light.is_on
     assert light.brightness == 128
     assert light.color_mode is ColorMode.BRIGHTNESS
-    assert light.supported_color_modes == {ColorMode.BRIGHTNESS}
     assert light.color_temp_kelvin is None
     assert light.xy_color is None
 

@@ -96,7 +96,7 @@ async def test_device_identify_setup_adds_button_per_device(
     fake_dali_driver: FakeDaliDriver,
 ) -> None:
     """Test one identify button is created per control-device address."""
-    fake_dali_driver.dev_inst_map.mapping = {(5, 0): 1, (5, 1): 3, (6, 0): 1}
+    fake_dali_driver.dev_inst_map.mapping = {(5, 0): 1, (5, 1): 3, (6, 0): 4}
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
     entry.add_to_hass(hass)
 
@@ -150,11 +150,12 @@ async def test_search_devices_press_runs_discovery(
     coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
     coordinator.data = {}
     button = DaliSearchDevices(coordinator, entry.entry_id, entry.title)
-    fake_dali_driver.pending_device_instances = {(3, 0): 3}
+    fake_dali_driver.pending_device_instances = {(3, 0): 6}
 
     await button.async_press()
 
-    assert (3, 0, 3) in coordinator.device_instances
+    assert (3, 0, 6) in coordinator.device_instances
+    assert (3, 0) in coordinator.input_devices
 
 
 EMERGENCY_BUTTON_COMMANDS = {

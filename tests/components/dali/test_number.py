@@ -114,7 +114,7 @@ async def test_mask_system_failure_level_reads_as_a_level(
     await _setup(hass, fake_dali_driver)
 
     assert (
-        hass.states.get("number.usb_dali2_2_gear_system_failure_level").state == "255"
+        hass.states.get("number.usb_dali2_1_gear_system_failure_level").state == "255"
     )
 
 
@@ -125,8 +125,8 @@ async def test_extended_fade_time_absent_when_unsupported(
     await _setup(hass, fake_dali_driver)
 
     # Only gear 0 implements it in the fake.
-    assert hass.states.get("number.usb_dali2_2_gear_extended_fade_time") is None
-    assert hass.states.get("number.usb_dali2_2_gear_minimum_level") is not None
+    assert hass.states.get("number.usb_dali2_1_gear_extended_fade_time") is None
+    assert hass.states.get("number.usb_dali2_1_gear_minimum_level") is not None
 
 
 @pytest.mark.parametrize(

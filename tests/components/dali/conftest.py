@@ -11,7 +11,16 @@ from unittest.mock import AsyncMock, patch
 from dali.command import Command, Response
 from dali.device.general import (
     DTR0 as DeviceDTR0,
+    DTR1 as DeviceDTR1,
+    DTR2 as DeviceDTR2,
     QueryMissingShortAddress as QueryMissingDeviceShortAddress,
+    QueryResolution,
+)
+from dali.device.general_sensor import (
+    MeasurementVariable,
+    QuantityName,
+    QueryMeasurementVariable,
+    UnitOfMeasurement,
 )
 from dali.exceptions import MemoryLocationNotImplemented
 from dali.frame import BackwardFrame
@@ -130,6 +139,17 @@ class FakeDaliDriver:
             info.HardwareVersion: "2.1",
             info.LastMemoryBank: 207,
         }
+        self._transport = SimpleNamespace(close=self._close)
+        self.dev_inst_map = FakeDevInstMap()
+        self.event_queue: asyncio.Queue[object] = asyncio.Queue()
+        self.measurement_variables = {
+            MeasurementVariable.INPUT_SIGNAL_SIGNED: 0,
+            MeasurementVariable.UNIT_OF_MEASUREMENT: UnitOfMeasurement.CELSIUS,
+            MeasurementVariable.QUANTITY_NAME: QuantityName.TEMPERATURE,
+            MeasurementVariable.MAGNITUDE: 127,
+        }
+        self.resolution = 9
+        self._dtr0: int | None = None
         # DT1 emergency state and recorded commands, keyed by gear address.
         self.emergency_info: dict[int, dict[str, int | None]] = {
             1: {
@@ -169,7 +189,6 @@ class FakeDaliDriver:
                 emergency_memory.DurationTestFailedCounterTotal: 0,
             }
         }
-        self.emergency_commands: list[tuple[int, str]] = []
         # Every memory bank other than bank 0, keyed bank, then gear address;
         # a gear missing from a bank's entry does not implement that bank.
         self.bank_memory: dict[int, dict[int, dict[object, object]]] = {
@@ -237,7 +256,7 @@ class FakeDaliDriver:
             },
             208: self.emergency_memory,
         }
-        self._transport = SimpleNamespace(close=self._close)
+        self.emergency_commands: list[tuple[int, str]] = []
         # Per-gear bank-0 identification overriding the shared default, so gear
         # re-addressed out of a collision keep distinct serial numbers.
         self.gear_metadata: dict[int, dict[object, object]] = {}
@@ -252,8 +271,6 @@ class FakeDaliDriver:
         self._gear_dtr0: int | None = None
         self._commission_available: list[int] | None = None
         self.unaddressed_gears: list[tuple[int, ...]] = []
-        self.dev_inst_map = FakeDevInstMap()
-        self.event_queue: asyncio.Queue[object] = asyncio.Queue()
         # Each pending control device is a list of (instance, instance_type) tuples.
         self.unaddressed_devices: list[list[tuple[int, int]]] = []
         # Instances an autodiscover run folds in, keyed by (address, instance),
@@ -276,7 +293,11 @@ class FakeDaliDriver:
     async def send(
         self, msg: Command | Generator, *, priority: int = 5, progress=None
     ) -> object:
-        """Return a response for a fake command, or run a fake sequence."""
+        """Return a response for a fake command, or run a fake sequence.
+
+        Mirrors the unified python-dali driver API: a bare command returns its
+        response, a generator sequence is driven to completion.
+        """
         if isinstance(msg, GeneratorType):
             return await self._run_sequence(msg, progress=progress)
         return await self._send_command(msg)
@@ -289,7 +310,14 @@ class FakeDaliDriver:
         """Return a response for a fake DALI command."""
         self.sent.append(command)
         if isinstance(command, DeviceDTR0):
+            self._dtr0 = command.param
             return SimpleNamespace(value=None)
+        if isinstance(command, (DeviceDTR1, DeviceDTR2)):
+            return SimpleNamespace(value=None)
+        if isinstance(command, QueryResolution):
+            return SimpleNamespace(value=self.resolution)
+        if isinstance(command, QueryMeasurementVariable):
+            return SimpleNamespace(value=self.measurement_variables.get(self._dtr0))
         if isinstance(command, QueryMissingShortAddress):
             return SimpleNamespace(value=True if self.unaddressed_gears else None)
         if isinstance(command, QueryMissingDeviceShortAddress):
@@ -398,17 +426,6 @@ class FakeDaliDriver:
             if address not in values:
                 raise MemoryLocationNotImplemented
             return dict(values[address])
-        if sequence.__name__ == "set_dtr0_variable":
-            frame_locals = sequence.gi_frame.f_locals
-            address = getattr(
-                frame_locals.get("address"), "address", frame_locals.get("address")
-            )
-            command_class = frame_locals["command"]
-            value = frame_locals["value"]
-            sequence.close()
-            self.gear_writes.append((address, command_class.__name__, value))
-            self._apply_gear_write(address, command_class.__name__, value)
-            return None
         if sequence.__name__ == "QueryEmergencyInformation":
             frame_locals = sequence.gi_frame.f_locals
             address = getattr(
@@ -432,6 +449,17 @@ class FakeDaliDriver:
                 ),
                 **info_,
             )
+        if sequence.__name__ == "set_dtr0_variable":
+            frame_locals = sequence.gi_frame.f_locals
+            address = getattr(
+                frame_locals.get("address"), "address", frame_locals.get("address")
+            )
+            command_class = frame_locals["command"]
+            value = frame_locals["value"]
+            sequence.close()
+            self.gear_writes.append((address, command_class.__name__, value))
+            self._apply_gear_write(address, command_class.__name__, value)
+            return None
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
             return list(self.gears.get(first_command.destination.address, ()))
@@ -440,6 +468,24 @@ class FakeDaliDriver:
             assert isinstance(dtr_command, DTR0)
             return self.color_values.get(dtr_command.param)
         return self.metadata
+
+    def _apply_emergency_command(self, address: int, command_name: str) -> None:
+        """Mutate the fake emergency status to mirror a control command."""
+        state = self.emergency_info.get(address)
+        if state is None:
+            return
+        status = state["emergency_status"] or 0
+        if command_name == "StartFunctionTest":
+            status |= 0b00010000
+        elif command_name == "StartDurationTest":
+            status |= 0b00100000
+        elif command_name == "StopTest":
+            status &= ~0b00110000
+        elif command_name == "Inhibit":
+            status |= 0b00000001
+        elif command_name == "ReLightResetInhibit":
+            status &= ~0b00000001
+        state["emergency_status"] = status
 
     def _apply_gear_write(self, address: int, command_name: str, value: int) -> None:
         """Mirror how a gear arbitrates a written configuration variable."""
@@ -463,24 +509,6 @@ class FakeDaliDriver:
             self.extended_fade[address] = (
                 (0, 0) if value > 0x4F else (value & 0x0F, (value >> 4) & 0x07)
             )
-
-    def _apply_emergency_command(self, address: int, command_name: str) -> None:
-        """Mutate the fake emergency status to mirror a control command."""
-        state = self.emergency_info.get(address)
-        if state is None:
-            return
-        status = state["emergency_status"] or 0
-        if command_name == "StartFunctionTest":
-            status |= 0b00010000
-        elif command_name == "StartDurationTest":
-            status |= 0b00100000
-        elif command_name == "StopTest":
-            status &= ~0b00110000
-        elif command_name == "Inhibit":
-            status |= 0b00000001
-        elif command_name == "ReLightResetInhibit":
-            status &= ~0b00000001
-        state["emergency_status"] = status
 
     def _gear_present_response(self, address: int) -> SimpleNamespace:
         """Return a QueryControlGearPresent response for a short address.

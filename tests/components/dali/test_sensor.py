@@ -1,4 +1,4 @@
-"""Test the Tridonic DALI sensor platform (identification and luminaire)."""
+"""Test the Tridonic DALI sensor platform (DT1 emergency sensors)."""
 
 from unittest.mock import patch
 
@@ -23,18 +23,6 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from .conftest import FakeDaliDriver, decode_status
 
 from tests.common import MockConfigEntry
-
-
-async def _setup(hass: HomeAssistant, driver: FakeDaliDriver) -> MockConfigEntry:
-    """Set up the integration against the fake driver."""
-    entry = MockConfigEntry(
-        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
-    )
-    entry.add_to_hass(hass)
-    with patch("homeassistant.components.dali.DriverLubaRs232", return_value=driver):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-    return entry
 
 
 def _sensor(
@@ -180,7 +168,17 @@ async def test_emergency_sensor_platform_creates_entities(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
     """Test the sensor platform creates emergency sensors for a DT1 gear."""
-    await _setup(hass, fake_dali_driver)
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
     mode_state = hass.states.get("sensor.usb_dali2_1_gear_emergency_mode")
     assert mode_state is not None
@@ -191,40 +189,90 @@ async def test_emergency_sensor_platform_creates_entities(
     assert battery_state.state == "100"
 
 
-async def test_identification_sensor_reports_the_printed_number(
+@pytest.mark.parametrize(
+    ("entity_id", "expected_state"),
+    [
+        ("sensor.usb_dali2_0_gear_identification_number", "1"),
+        ("sensor.usb_dali2_1_sensor_identification_number", "1"),
+    ],
+    ids=[
+        "gear_identification_number",
+        "device_identification_number",
+    ],
+)
+async def test_identification_sensors_report_the_printed_numbers(
     hass: HomeAssistant,
     entity_registry: er.EntityRegistry,
     fake_dali_driver: FakeDaliDriver,
+    entity_id: str,
+    expected_state: str,
 ) -> None:
-    """Test the identification number entity reports the printed number.
+    """Test the identification number entities report the printed numbers.
 
     The device-info panel already carries this value as the device serial
     number, so the sensor itself is filed under diagnostics.
     """
-    await _setup(hass, fake_dali_driver)
+    fake_dali_driver.dev_inst_map.mapping = {(1, 3): 6}
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
 
-    entity_id = "sensor.usb_dali2_0_gear_identification_number"
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
     state = hass.states.get(entity_id)
     assert state is not None
-    assert state.state == "1"
+    assert state.state == expected_state
     assert (
         entity_registry.async_get(entity_id).entity_category
         == EntityCategory.DIAGNOSTIC
     )
 
 
-async def test_dali_address_sensor_reports_the_short_address(
+@pytest.mark.parametrize(
+    ("entity_id", "expected_state"),
+    [
+        ("sensor.usb_dali2_0_gear_dali_address", "0"),
+        ("sensor.usb_dali2_1_sensor_dali_address", "1"),
+    ],
+    ids=[
+        "gear_address",
+        "device_address",
+    ],
+)
+async def test_dali_address_sensors_report_the_short_address(
     hass: HomeAssistant,
     entity_registry: er.EntityRegistry,
     fake_dali_driver: FakeDaliDriver,
+    entity_id: str,
+    expected_state: str,
 ) -> None:
-    """Test the DALI address entity reports the bus short address."""
-    await _setup(hass, fake_dali_driver)
+    """Test the DALI address entities report the bus short address.
 
-    entity_id = "sensor.usb_dali2_0_gear_dali_address"
+    The address is part of the device name, so the sensor is filed under
+    diagnostics.
+    """
+    fake_dali_driver.dev_inst_map.mapping = {(1, 3): 6}
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
     state = hass.states.get(entity_id)
     assert state is not None
-    assert state.state == "0"
+    assert state.state == expected_state
     assert (
         entity_registry.async_get(entity_id).entity_category
         == EntityCategory.DIAGNOSTIC
@@ -240,31 +288,55 @@ async def test_dali_address_sensor_reports_the_short_address(
         ("sensor.usb_dali2_0_gear_nominal_light_output", "3600", "lm"),
         ("sensor.usb_dali2_0_gear_correlated_color_temperature", "4000", "K"),
         ("sensor.usb_dali2_0_gear_light_distribution_type", "type_iii", None),
-        ("sensor.usb_dali2_0_gear_minimum_mains_voltage", "198", "V"),
+        ("sensor.usb_dali2_0_gear_active_energy", "1234.5", "Wh"),
+        ("sensor.usb_dali2_0_gear_control_gear_operating_time", "360000", "s"),
+        ("sensor.usb_dali2_0_gear_control_gear_supply_voltage", "230.5", "V"),
+        ("sensor.usb_dali2_0_gear_control_gear_internal_temperature", "45", "°C"),
+        ("sensor.usb_dali2_0_gear_light_source_current", "0.35", "A"),
+        ("sensor.usb_dali2_0_gear_light_source_start_counter", "118", None),
+        ("sensor.usb_dali2_0_gear_rated_median_useful_life", "50000", "h"),
+        ("sensor.usb_dali2_0_gear_control_gear_reference_temperature", "65", "°C"),
     ],
     ids=[
-        "gtin",
-        "string",
-        "power",
-        "light_output",
-        "cct",
-        "enum",
-        "voltage",
+        "bank_1_gtin",
+        "bank_1_string",
+        "bank_1_power",
+        "bank_1_light_output",
+        "bank_1_cct",
+        "bank_1_enum",
+        "bank_202_energy",
+        "bank_205_duration",
+        "bank_205_scaled_voltage",
+        "bank_205_temperature",
+        "bank_206_scaled_current",
+        "bank_206_counter",
+        "bank_207_life",
+        "bank_207_temperature",
     ],
 )
-async def test_luminaire_sensors_report_the_decoded_values(
+async def test_memory_bank_sensors_report_the_decoded_values(
     hass: HomeAssistant,
     fake_dali_driver: FakeDaliDriver,
     entity_id: str,
     expected_state: str,
     expected_unit: str | None,
 ) -> None:
-    """Test the memory bank 1 luminaire values reach the sensor states.
+    """Test the DiiA Part 251, 252 and 253 banks reach the sensor states.
 
-    The bank is read after setup has finished, so the entities only appear
+    The banks are read after setup has finished, so the entities only appear
     once the deferred read lands.
     """
-    await _setup(hass, fake_dali_driver)
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
     state = hass.states.get(entity_id)
     assert state is not None
@@ -272,14 +344,24 @@ async def test_luminaire_sensors_report_the_decoded_values(
     assert state.attributes.get("unit_of_measurement") == expected_unit
 
 
-async def test_luminaire_sensors_are_diagnostic(
+async def test_memory_bank_sensors_are_diagnostic(
     hass: HomeAssistant,
     device_registry: dr.DeviceRegistry,
     entity_registry: er.EntityRegistry,
     fake_dali_driver: FakeDaliDriver,
 ) -> None:
-    """Test every luminaire and identification sensor is filed under diagnostics."""
-    entry = await _setup(hass, fake_dali_driver)
+    """Test every memory bank sensor is filed under diagnostics."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
     device = device_registry.async_get_device_by_identifier(
         (DOMAIN, registry_identifier(entry.entry_id, 0, input_device=False)),
@@ -295,71 +377,25 @@ async def test_luminaire_sensors_are_diagnostic(
     assert categories == {EntityCategory.DIAGNOSTIC}
 
 
-async def test_gear_without_the_luminaire_bank_gets_no_luminaire_sensors(
-    hass: HomeAssistant,
-    fake_dali_driver: FakeDaliDriver,
-) -> None:
-    """Test a gear that does not implement memory bank 1 gains no luminaire sensors."""
-    await _setup(hass, fake_dali_driver)
-
-    # Only gear 0 has a bank-1 entry in the fake.
-    assert hass.states.get("sensor.usb_dali2_2_gear_nominal_input_power") is None
-    assert hass.states.get("sensor.usb_dali2_2_gear_light_distribution_type") is None
-    # The identification sensors do not depend on the luminaire bank.
-    assert hass.states.get("sensor.usb_dali2_2_gear_identification_number") is not None
-
-
-@pytest.mark.parametrize(
-    ("entity_id", "expected_state", "expected_unit"),
-    [
-        ("sensor.usb_dali2_0_gear_active_energy", "1234.5", "Wh"),
-        ("sensor.usb_dali2_0_gear_control_gear_operating_time", "360000", "s"),
-        ("sensor.usb_dali2_0_gear_control_gear_supply_voltage", "230.5", "V"),
-        ("sensor.usb_dali2_0_gear_control_gear_internal_temperature", "45", "°C"),
-        ("sensor.usb_dali2_0_gear_light_source_current", "0.35", "A"),
-        ("sensor.usb_dali2_0_gear_light_source_start_counter", "118", None),
-        ("sensor.usb_dali2_0_gear_rated_median_useful_life", "50000", "h"),
-        ("sensor.usb_dali2_0_gear_control_gear_reference_temperature", "65", "°C"),
-    ],
-    ids=[
-        "bank_202_energy",
-        "bank_205_duration",
-        "bank_205_scaled_voltage",
-        "bank_205_temperature",
-        "bank_206_scaled_current",
-        "bank_206_counter",
-        "bank_207_life",
-        "bank_207_temperature",
-    ],
-)
-async def test_extended_bank_sensors_report_the_decoded_values(
-    hass: HomeAssistant,
-    fake_dali_driver: FakeDaliDriver,
-    entity_id: str,
-    expected_state: str,
-    expected_unit: str | None,
-) -> None:
-    """Test the DiiA Part 252 and 253 banks reach the sensor states.
-
-    The banks are read after setup has finished, so the entities only appear
-    once the deferred diagnostics read lands.
-    """
-    await _setup(hass, fake_dali_driver)
-
-    state = hass.states.get(entity_id)
-    assert state is not None
-    assert state.state == expected_state
-    assert state.attributes.get("unit_of_measurement") == expected_unit
-
-
 async def test_gear_without_the_extended_banks_gets_no_sensors(
     hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
     fake_dali_driver: FakeDaliDriver,
 ) -> None:
     """Test a gear that implements none of the extended banks gains no entities."""
-    await _setup(hass, fake_dali_driver)
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
 
-    # Only gear 0 has the bank 202/205/206/207 entries in the fake.
-    assert hass.states.get("sensor.usb_dali2_2_gear_active_energy") is None
-    assert hass.states.get("sensor.usb_dali2_2_gear_light_source_voltage") is None
-    assert hass.states.get("sensor.usb_dali2_2_gear_rated_median_useful_life") is None
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert hass.states.get("sensor.usb_dali2_1_gear_nominal_input_power") is None
+    assert hass.states.get("sensor.usb_dali2_1_gear_active_energy") is None
+    assert hass.states.get("sensor.usb_dali2_1_gear_light_source_voltage") is None
+    assert hass.states.get("sensor.usb_dali2_1_gear_rated_median_useful_life") is None

@@ -5,12 +5,12 @@
       list([
         1,
         2,
-        1,
+        4,
       ]),
       list([
         1,
         3,
-        3,
+        6,
       ]),
     ]),
     'entry_data': dict({
@@ -199,6 +199,22 @@
           0.5000076295109483,
           0.2500038147554742,
         ]),
+      }),
+    }),
+    'input_devices': dict({
+      '1_3': dict({
+        'batch_no': '0000000000',
+        'firmware_version': '1.0',
+        'gtin': 1234567654321,
+        'hardware_version': '2.1',
+        'identification_number': 1,
+        'input_signal_signed': False,
+        'last_memory_bank': 207,
+        'magnitude': 127,
+        'quantity_name': 26,
+        'resolution': 9,
+        'serial_no': '010000',
+        'unit_of_measurement': 9,
       }),
     }),
   })

@@ -320,6 +320,9 @@
       "identification_number": {
         "name": "Identification number"
       },
+      "illuminance": {
+        "name": "Illuminance"
+      },
       "input_power_minimum_dim": {
         "name": "Input power at minimum dim level"
       },
@@ -398,6 +401,9 @@
       "min_control_gear_temperature_total": {
         "name": "Minimum control gear temperature"
       },
+      "part306_sensor": {
+        "name": "Measurement"
+      },
       "rated_duration": {
         "name": "Rated duration"
       },
@@ -415,6 +421,9 @@
       },
       "start_function_test_counter": {
         "name": "Function test start counter"
+      },
+      "voc": {
+        "name": "Volatile organic compounds"
       },
       "week_of_manufacture": {
         "name": "Week of manufacture"

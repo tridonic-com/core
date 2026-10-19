@@ -328,7 +328,7 @@ async def test_remove_config_entry_device(
     removable: bool,
 ) -> None:
     """Test devices can only be removed once their address stops responding."""
-    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 3}
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 4}
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, entry_id="ENTRY"
     )

@@ -97,9 +97,9 @@ async def test_unaddressed_device_issue_is_fixed(
     issue_registry: ir.IssueRegistry,
     fake_dali_driver: FakeDaliDriver,
 ) -> None:
-    """Test the repair assigns a device address and exposes the new entity."""
+    """Test the repair assigns a device address and exposes the new sensor."""
     assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
-    fake_dali_driver.unaddressed_devices = [[(0, 1)]]
+    fake_dali_driver.unaddressed_devices = [[(0, 6)]]
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
     )
@@ -126,8 +126,8 @@ async def test_unaddressed_device_issue_is_fixed(
 
     assert result["type"] == FlowResultType.CREATE_ENTRY
     assert issue_registry.async_get_issue(DOMAIN, issue_id) is None
-    assert (0, 0, 1) in entry.runtime_data.device_instances
-    assert hass.states.get("event.usb_dali2_0_sensor_push_button_0") is not None
+    assert (0, 0) in entry.runtime_data.input_devices
+    assert hass.states.get("sensor.usb_dali2_0_sensor_temperature") is not None
 
 
 @pytest.mark.parametrize(
