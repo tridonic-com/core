@@ -107,6 +107,14 @@ from .const import (
     unaddressed_gear_issue_id,
 )
 from .helpers import MASK_LEVEL
+from .lifetime import (
+    BANK_4,
+    OPERATING_TIME_VALUES,
+    AgingRateLastMonth,
+    AgingRateLastYear,
+    CurrentAgingRate,
+    DriverHealth,
+)
 
 # LUBA "ADD DALI FRAME TO TX BUFFER" reason code for an unpowered bus.
 _BUS_VOLTAGE_ERROR_CODE = DriverLubaRs232.LubaTxError.BUS_VOLTAGE_ERROR.value
@@ -284,6 +292,23 @@ class DaliDiagnosticsData:
 
 
 @dataclass(frozen=True, slots=True)
+class DaliLifetimeData:
+    """Tridonic Lifetime Indicator data from memory bank 4.
+
+    A Tridonic driver models the ageing of its electrolytic capacitors and
+    recalculates these every five minutes. ``operating_time`` holds the hours
+    logged in each of the ``TEMPERATURE_RANGES`` control gear temperature
+    ranges, in the same order.
+    """
+
+    driver_health: float | None = None
+    current_aging_rate: float | None = None
+    aging_rate_last_month: float | None = None
+    aging_rate_last_year: float | None = None
+    operating_time: tuple[int | None, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class DaliEmergencyData:
     """Status and measurement data for one DT1 (IEC 62386-202) emergency gear.
 
@@ -378,6 +403,7 @@ class DaliGearData(DaliDeviceData):
     luminaire: DaliLuminaireData | None = None
     maintenance: DaliMaintenanceData | None = None
     diagnostics: DaliDiagnosticsData | None = None
+    lifetime: DaliLifetimeData | None = None
     active_energy: float | None = None
 
 
@@ -441,6 +467,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._luminaire: dict[int, DaliLuminaireData] = {}
         self._maintenance: dict[int, DaliMaintenanceData] = {}
         self._diagnostics: dict[int, DaliDiagnosticsData] = {}
+        self._lifetime: dict[int, DaliLifetimeData] = {}
         self._energy: dict[int, float] = {}
         self._gear_config: dict[int, DaliGearConfig] = {}
         self.input_devices: dict[tuple[int, int], DaliGeneralSensorData] = {}
@@ -1155,6 +1182,52 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             ),
         )
 
+    def _is_tridonic(self, address: int) -> bool:
+        """Return whether a control gear reports a Tridonic GTIN."""
+        gtin = self._metadata.get(address, DaliDeviceData()).gtin
+        return gtin is not None and str(gtin).startswith(TRIDONIC_GTIN_PREFIX)
+
+    async def _query_lifetime(
+        self, address: int, gear_address: GearShort
+    ) -> DaliLifetimeData | None:
+        """Read the Tridonic Lifetime Indicator values from memory bank 4.
+
+        Bank 4 is manufacturer-specific, so it is only read from gear whose
+        GTIN is Tridonic's; another manufacturer's bank 4 holds something else
+        entirely. Tridonic gear predating the Lifetime Indicator implements the
+        bank without those locations, and gives nothing back here.
+        """
+        if not self._is_tridonic(address) or not self._implements_bank(address, 4):
+            return None
+        values = await self._read_bank(BANK_4, gear_address)
+        if values is None:
+            return None
+        driver_health = _memory_float(values.get(DriverHealth))
+        current_aging_rate = _memory_float(values.get(CurrentAgingRate))
+        aging_rate_last_month = _memory_float(values.get(AgingRateLastMonth))
+        aging_rate_last_year = _memory_float(values.get(AgingRateLastYear))
+        operating_time = tuple(
+            _memory_int(values.get(value)) for value in OPERATING_TIME_VALUES
+        )
+        if all(
+            value is None
+            for value in (
+                driver_health,
+                current_aging_rate,
+                aging_rate_last_month,
+                aging_rate_last_year,
+                *operating_time,
+            )
+        ):
+            return None
+        return DaliLifetimeData(
+            driver_health=driver_health,
+            current_aging_rate=current_aging_rate,
+            aging_rate_last_month=aging_rate_last_month,
+            aging_rate_last_year=aging_rate_last_year,
+            operating_time=operating_time,
+        )
+
     async def _query_general_sensor(
         self, address: DeviceShort, instance: int
     ) -> DaliGeneralSensorData:
@@ -1365,10 +1438,15 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 diagnostics := await self._query_gear_diagnostics(address, gear_address)
             ) is not None:
                 self._diagnostics[address] = diagnostics
+            if (
+                lifetime := await self._query_lifetime(address, gear_address)
+            ) is not None:
+                self._lifetime[address] = lifetime
         return {
             address: replace(
                 gear,
                 diagnostics=self._diagnostics.get(address),
+                lifetime=self._lifetime.get(address),
                 active_energy=self._energy.get(address),
             )
             for address, gear in data.items()
@@ -1451,6 +1529,11 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._diagnostics = {
             address: diagnostics
             for address, diagnostics in self._diagnostics.items()
+            if address in data
+        }
+        self._lifetime = {
+            address: lifetime
+            for address, lifetime in self._lifetime.items()
             if address in data
         }
         self._energy = {

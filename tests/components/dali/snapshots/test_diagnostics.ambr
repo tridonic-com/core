@@ -65,6 +65,7 @@
         'identification_number': 1,
         'last_memory_bank': 207,
         'level': 64,
+        'lifetime': None,
         'linear_dimming': True,
         'luminaire': dict({
           'cct': 4000,
@@ -153,6 +154,7 @@
         'identification_number': 1,
         'last_memory_bank': 207,
         'level': 255,
+        'lifetime': None,
         'linear_dimming': False,
         'luminaire': None,
         'maintenance': None,
@@ -186,6 +188,7 @@
         'identification_number': 1,
         'last_memory_bank': 207,
         'level': 255,
+        'lifetime': None,
         'linear_dimming': False,
         'luminaire': None,
         'maintenance': None,

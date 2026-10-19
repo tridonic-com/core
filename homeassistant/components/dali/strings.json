@@ -236,6 +236,12 @@
       "active_energy": {
         "name": "Active energy"
       },
+      "aging_rate_last_month": {
+        "name": "Aging rate last month"
+      },
+      "aging_rate_last_year": {
+        "name": "Aging rate last year"
+      },
       "air_quality_index": {
         "name": "[%key:component::sensor::entity_component::aqi::name%]"
       },
@@ -290,8 +296,14 @@
       "cri": {
         "name": "Color rendering index"
       },
+      "current_aging_rate": {
+        "name": "Current aging rate"
+      },
       "dali_address": {
         "name": "DALI address"
+      },
+      "driver_health": {
+        "name": "Driver health"
       },
       "duration_test_failed_counter_total": {
         "name": "Duration test failed counter"
@@ -406,6 +418,9 @@
       },
       "min_control_gear_temperature_total": {
         "name": "Minimum control gear temperature"
+      },
+      "operating_time_temperature_range": {
+        "name": "Operating time {range}"
       },
       "part306_sensor": {
         "name": "Measurement"

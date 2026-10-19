@@ -44,9 +44,11 @@ from .coordinator import (
     DaliEmergencyData,
     DaliGearData,
     DaliGeneralSensorData,
+    DaliLifetimeData,
     DaliLuminaireData,
     DaliMaintenanceData,
 )
+from .lifetime import TEMPERATURE_RANGES, UNIT_PERCENT_PER_YEAR
 
 PARALLEL_UPDATES = 0
 
@@ -701,6 +703,83 @@ GEAR_DIAGNOSTIC_SENSOR_TYPES: tuple[DaliGearDiagnosticSensorDescription, ...] = 
     ),
 )
 
+
+@dataclass(frozen=True, kw_only=True)
+class DaliLifetimeSensorDescription(SensorEntityDescription):
+    """Description of a Tridonic memory bank 4 Lifetime Indicator value."""
+
+    value_fn: Callable[[DaliLifetimeData], int | float | None]
+
+
+def _temperature_range_label(bounds: tuple[int | None, int | None]) -> str:
+    """Return a readable label for one logged control gear temperature range."""
+    low, high = bounds
+    if low is None:
+        return f"≤{high} °C"
+    if high is None:
+        return f"≥{low} °C"
+    return f"{low} to {high} °C"
+
+
+def _operating_time_description(index: int) -> DaliLifetimeSensorDescription:
+    """Describe the operating-time counter for one temperature range.
+
+    The 17 counters are far more detail than most installations want on the
+    dashboard, so they are created disabled and enabled per gear on demand.
+    """
+    return DaliLifetimeSensorDescription(
+        key=f"operating_time_temperature_range_{index + 1}",
+        translation_key="operating_time_temperature_range",
+        translation_placeholders={
+            "range": _temperature_range_label(TEMPERATURE_RANGES[index])
+        },
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda data: (
+            data.operating_time[index] if index < len(data.operating_time) else None
+        ),
+    )
+
+
+LIFETIME_SENSOR_TYPES: tuple[DaliLifetimeSensorDescription, ...] = (
+    DaliLifetimeSensorDescription(
+        key="driver_health",
+        translation_key="driver_health",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.driver_health,
+    ),
+    DaliLifetimeSensorDescription(
+        key="current_aging_rate",
+        translation_key="current_aging_rate",
+        native_unit_of_measurement=UNIT_PERCENT_PER_YEAR,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.current_aging_rate,
+    ),
+    DaliLifetimeSensorDescription(
+        key="aging_rate_last_month",
+        translation_key="aging_rate_last_month",
+        native_unit_of_measurement=UNIT_PERCENT_PER_YEAR,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.aging_rate_last_month,
+    ),
+    DaliLifetimeSensorDescription(
+        key="aging_rate_last_year",
+        translation_key="aging_rate_last_year",
+        native_unit_of_measurement=UNIT_PERCENT_PER_YEAR,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.aging_rate_last_year,
+    ),
+    *(_operating_time_description(index) for index in range(len(TEMPERATURE_RANGES))),
+)
+
 ACTIVE_ENERGY_SENSOR = SensorEntityDescription(
     key="active_energy",
     translation_key="active_energy",
@@ -820,6 +899,7 @@ async def async_setup_entry(
     known_luminaire: set[int] = set()
     known_maintenance: set[int] = set()
     known_diagnostics: set[int] = set()
+    known_lifetime: set[int] = set()
     known_energy: set[int] = set()
 
     @callback
@@ -849,6 +929,14 @@ async def async_setup_entry(
                         coordinator, entry.entry_id, entry.title, address, description
                     )
                     for description in GEAR_DIAGNOSTIC_SENSOR_TYPES
+                )
+            if gear.lifetime is not None and address not in known_lifetime:
+                known_lifetime.add(address)
+                entities.extend(
+                    DaliLifetimeSensor(
+                        coordinator, entry.entry_id, entry.title, address, description
+                    )
+                    for description in LIFETIME_SENSOR_TYPES
                 )
             if gear.active_energy is not None and address not in known_energy:
                 known_energy.add(address)
@@ -1196,6 +1284,28 @@ class DaliGearDiagnosticSensor(DaliGearBankSensor):
         if gear is None or gear.diagnostics is None:
             return None
         return self.entity_description.value_fn(gear.diagnostics)
+
+
+class DaliLifetimeSensor(DaliGearBankSensor):
+    """Representation of a Tridonic bank 4 Lifetime Indicator value."""
+
+    entity_description: DaliLifetimeSensorDescription
+
+    @property
+    @override
+    def available(self) -> bool:
+        """Return whether the Lifetime Indicator memory bank has been read."""
+        gear = self._gear
+        return super().available and gear is not None and gear.lifetime is not None
+
+    @property
+    @override
+    def native_value(self) -> int | float | None:
+        """Return the described Lifetime Indicator value."""
+        gear = self._gear
+        if gear is None or gear.lifetime is None:
+            return None
+        return self.entity_description.value_fn(gear.lifetime)
 
 
 class DaliEnergySensor(DaliGearBankSensor):
