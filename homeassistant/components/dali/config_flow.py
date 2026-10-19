@@ -19,7 +19,7 @@ from homeassistant.const import CONF_DEVICE, CONF_NAME
 from homeassistant.helpers.selector import SerialPortSelector
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
 
-from .const import CONF_BUS_POWER, DOMAIN
+from .const import CONF_BUS_POWER, CONF_HAS_BUS_SUPPLY, DOMAIN
 
 
 def _serial_port_label(port: SerialDevice) -> str:
@@ -174,5 +174,9 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         self._async_abort_entries_match({CONF_DEVICE: self._device})
         return self.async_create_entry(
             title=self._title,
-            data={CONF_DEVICE: self._device, CONF_BUS_POWER: bus_power},
+            data={
+                CONF_DEVICE: self._device,
+                CONF_BUS_POWER: bus_power,
+                CONF_HAS_BUS_SUPPLY: self._offer_bus_power,
+            },
         )

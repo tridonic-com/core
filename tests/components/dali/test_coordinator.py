@@ -9,7 +9,14 @@ from dali.gear.led import QueryDimmingCurve
 import pytest
 from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant.components.dali.const import CONF_BUS_POWER, DOMAIN
+from homeassistant.components.dali.const import (
+    CONF_BUS_POWER,
+    CONF_HAS_BUS_SUPPLY,
+    DOMAIN,
+    bus_no_supply_issue_id,
+    bus_overload_issue_id,
+    bus_voltage_error_issue_id,
+)
 from homeassistant.components.dali.coordinator import (
     DaliCoordinator,
     DaliGearData,
@@ -18,6 +25,7 @@ from homeassistant.components.dali.coordinator import (
 )
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .conftest import FakeDaliDriver
@@ -213,13 +221,19 @@ async def test_communication_failure_raises_update_failed(
         await coordinator._query_gear(0)
 
 
-async def test_update_transmission_error_fails_update(
+async def test_update_bus_voltage_error_raises_overload_repair(
     hass: HomeAssistant,
     fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
 ) -> None:
-    """Test an interface transmission error mid-scan fails the update."""
+    """Test a bus sagging under load mid-operation raises the overload repair."""
     entry = MockConfigEntry(
-        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: True}
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/ttyACM0",
+            CONF_BUS_POWER: True,
+            CONF_HAS_BUS_SUPPLY: True,
+        },
     )
     entry.add_to_hass(hass)
     coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
@@ -229,6 +243,78 @@ async def test_update_transmission_error_fails_update(
         pytest.raises(UpdateFailed),
     ):
         await coordinator._async_update_data()
+
+    assert issue_registry.async_get_issue(DOMAIN, bus_overload_issue_id(entry.entry_id))
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_update_bus_voltage_error_without_supply_raises_no_supply(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a bus-voltage error without an integrated supply raises no_supply."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/ttyACM0",
+            CONF_BUS_POWER: False,
+            CONF_HAS_BUS_SUPPLY: False,
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=TransmissionError(1)),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+
+    no_supply = issue_registry.async_get_issue(
+        DOMAIN, bus_no_supply_issue_id(entry.entry_id)
+    )
+    assert no_supply is not None
+    assert no_supply.is_fixable is False
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_update_recovers_and_clears_bus_voltage_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a bus that recovers clears the repair raised while it was down."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/ttyACM0",
+            CONF_BUS_POWER: True,
+            CONF_HAS_BUS_SUPPLY: True,
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=TransmissionError(1)),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._async_update_data()
+    assert issue_registry.async_get_issue(DOMAIN, bus_overload_issue_id(entry.entry_id))
+
+    await coordinator._async_update_data()
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
 
 
 async def test_async_update_gear_touches_single_entry(

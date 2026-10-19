@@ -5,18 +5,25 @@ import logging
 from types import GeneratorType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from dali.exceptions import DALISequenceError
+from dali.exceptions import DALISequenceError, TransmissionError
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.components.dali import async_remove_config_entry_device
-from homeassistant.components.dali.const import DOMAIN
+from homeassistant.components.dali.const import (
+    CONF_BUS_POWER,
+    CONF_HAS_BUS_SUPPLY,
+    DOMAIN,
+    bus_no_supply_issue_id,
+    bus_overload_issue_id,
+    bus_voltage_error_issue_id,
+)
 from homeassistant.components.dali.coordinator import FULL_SCAN_INTERVAL, SCAN_INTERVAL
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 
 from .conftest import FakeDaliDriver
 
@@ -112,6 +119,150 @@ async def test_setup_closes_transport_when_connect_is_cancelled(
         assert not await hass.config_entries.async_setup(entry.entry_id)
 
     assert fake_dali_driver.closed
+
+
+async def test_setup_bus_voltage_error_creates_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test an unpowered bus raises a repair to switch on the interface supply."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/ttyACM0",
+            CONF_BUS_POWER: False,
+            CONF_HAS_BUS_SUPPLY: True,
+        },
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "connect", side_effect=TransmissionError(1)),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert fake_dali_driver.closed
+    assert issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_setup_bus_voltage_error_with_bus_power_raises_overload(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a sagging bus with the supply on raises an overload repair.
+
+    A bus-voltage error while the interface already powers the bus means the
+    supply cannot hold the bus up under load, so the non-fixable overload
+    repair is raised instead of the fixable switch-on-power one.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/ttyACM0",
+            CONF_BUS_POWER: True,
+            CONF_HAS_BUS_SUPPLY: True,
+        },
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "connect", side_effect=TransmissionError(1)),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+    overload = issue_registry.async_get_issue(
+        DOMAIN, bus_overload_issue_id(entry.entry_id)
+    )
+    assert overload is not None
+    assert overload.is_fixable is False
+
+
+async def test_setup_bus_voltage_error_without_supply_raises_no_supply(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test an interface without a bus supply raises the non-fixable repair.
+
+    A bus-voltage error on an interface that has no integrated supply means an
+    external DALI bus power supply is missing or failed, so the non-fixable
+    no-supply repair is raised instead of the fixable switch-on-power one.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/ttyACM0",
+            CONF_BUS_POWER: False,
+            CONF_HAS_BUS_SUPPLY: False,
+        },
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(fake_dali_driver, "connect", side_effect=TransmissionError(1)),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+    no_supply = issue_registry.async_get_issue(
+        DOMAIN, bus_no_supply_issue_id(entry.entry_id)
+    )
+    assert no_supply is not None
+    assert no_supply.is_fixable is False
+
+
+async def test_setup_clears_stale_bus_voltage_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test a successful setup removes a lingering bus-voltage repair."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0", CONF_BUS_POWER: False}
+    )
+    entry.add_to_hass(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        bus_voltage_error_issue_id(entry.entry_id),
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="bus_voltage_error",
+        translation_placeholders={"title": "USB-DALI2"},
+    )
+    with (
+        patch(
+            "homeassistant.components.dali.DriverLubaRs232",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", new_callable=AsyncMock
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert not issue_registry.async_get_issue(
+        DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+    entry.runtime_data.close()
 
 
 async def test_setup_entry_refresh_failure(

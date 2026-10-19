@@ -1,41 +1,150 @@
 """Data update coordinator for the Tridonic DALI integration."""
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
+from decimal import Decimal
 import logging
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 
-from dali.address import GearShort
+from dali.address import GearBroadcast, GearShort
 from dali.driver.serial import DriverLubaRs232
-from dali.exceptions import DALISequenceError, TransmissionError
+from dali.exceptions import (
+    DALISequenceError,
+    MemoryLocationNotImplemented,
+    ResponseError,
+    TransmissionError,
+)
 from dali.gear.general import (
+    DTR0 as GearDTR0,
     QueryActualLevel,
     QueryControlGearPresent,
+    QueryExtendedFadeTime,
+    QueryFadeTimeFadeRate,
     QueryMaxLevel,
     QueryMinLevel,
+    QueryMissingShortAddress,
+    QuerySystemFailureLevel,
+    SetShortAddress,
 )
 from dali.gear.led import QueryDimmingCurve
-from dali.sequences import QueryDeviceTypes
+from dali.memory import info, oem
+from dali.memory.location import FlagValue, MemoryBank, MemoryValue
+from dali.sequences import Commissioning, QueryDeviceTypes, progress
 
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import UNDEFINED
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    CONF_BUS_POWER,
+    CONF_HAS_BUS_SUPPLY,
     DEVICE_TYPE_LED,
     DOMAIN,
     GEAR_DEVICE_TYPE_NAMES,
+    ISSUE_ADDRESS_COLLISION,
+    ISSUE_BUS_NO_SUPPLY,
+    ISSUE_BUS_OVERLOAD,
+    ISSUE_BUS_VOLTAGE_ERROR,
+    ISSUE_UNADDRESSED_GEAR,
     SUPPORTED_GEAR_DEVICE_TYPES,
+    address_collision_issue_id,
+    bus_no_supply_issue_id,
+    bus_overload_issue_id,
+    bus_voltage_error_issue_id,
     registry_identifier,
+    unaddressed_gear_issue_id,
 )
+from .helpers import MASK_LEVEL
 
 if TYPE_CHECKING:
     from . import DaliConfigEntry
 
+# LUBA "ADD DALI FRAME TO TX BUFFER" reason code for an unpowered bus.
+_BUS_VOLTAGE_ERROR_CODE = DriverLubaRs232.LubaTxError.BUS_VOLTAGE_ERROR.value
+
 SCAN_INTERVAL = timedelta(seconds=30)
 FULL_SCAN_INTERVAL = timedelta(minutes=5)
 LOGGER = logging.getLogger(__name__)
+
+# Identification metadata is static per device, so it is persisted and restored
+# across restarts to avoid re-reading whole memory banks byte by byte each time.
+STORAGE_VERSION = 3
+METADATA_SAVE_DELAY = 10
+
+# Content format identifier a bus unit sets in memory bank 1 to declare that
+# the bank holds the DiiA Part 251 extension rather than only the two values
+# IEC 62386-102 section 9.10.7 defines.
+PART_251_CONTENT_FORMAT = 0x0003
+
+# Tridonic's GTIN prefix. Their firmware version bytes carry a build number
+# where IEC 62386-102 has a plain minor version.
+TRIDONIC_GTIN_PREFIX = "9006210"
+
+# A yes/no query is the reliable collision probe: IEC 62386 defines that two or
+# more gear answering "yes" at once garble the backward frame into a framing
+# error, whatever their data. A data query (e.g. the random address) would not,
+# because two gear sharing a value answer identical, aligned frames -- and
+# freshly added gear share the default random address until commissioned.
+_COLLISION_PROBES = (QueryControlGearPresent,)
+
+
+def raise_bus_voltage_issue(
+    hass: HomeAssistant, entry: ConfigEntry, err: TransmissionError
+) -> None:
+    """Raise a repair for an unpowered or an overloaded DALI bus.
+
+    A bus-voltage error with the integrated supply switched off means the bus
+    is simply unpowered, so offer the fixable repair to switch it on. The same
+    error while a supply already powers the bus means that supply cannot hold
+    the bus up under load, i.e. it is overloaded or undersized; that hardware
+    limit is surfaced for information only.
+    """
+    if err.error_code != _BUS_VOLTAGE_ERROR_CODE:
+        return
+    if not entry.data.get(CONF_HAS_BUS_SUPPLY, False):
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            bus_no_supply_issue_id(entry.entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_BUS_NO_SUPPLY,
+            translation_placeholders={"title": entry.title},
+        )
+        return
+    if entry.data.get(CONF_BUS_POWER, False):
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            bus_overload_issue_id(entry.entry_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_BUS_OVERLOAD,
+            translation_placeholders={"title": entry.title},
+        )
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        bus_voltage_error_issue_id(entry.entry_id),
+        data={"entry_id": entry.entry_id},
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=ISSUE_BUS_VOLTAGE_ERROR,
+        translation_placeholders={"title": entry.title},
+    )
+
+
+def clear_bus_voltage_issues(hass: HomeAssistant, entry_id: str) -> None:
+    """Remove any unpowered- or overloaded-bus repair for this entry."""
+    ir.async_delete_issue(hass, DOMAIN, bus_voltage_error_issue_id(entry_id))
+    ir.async_delete_issue(hass, DOMAIN, bus_overload_issue_id(entry_id))
+    ir.async_delete_issue(hass, DOMAIN, bus_no_supply_issue_id(entry_id))
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,14 +163,82 @@ class DaliDeviceData:
 
 
 @dataclass(frozen=True, slots=True)
+class DaliLuminaireData:
+    """Memory bank 1 luminaire data, programmed by the luminaire manufacturer.
+
+    IEC 62386-102 section 9.10.7 defines the first two values; the rest come
+    from DiiA Part 251, which a bus unit signals by setting the content format
+    identifier. The values describe the luminaire the gear was built into, not
+    the gear itself, and never change once programmed.
+    """
+
+    manufacturer_gtin: int | None = None
+    luminaire_id: int | None = None
+    year_of_manufacture: int | None = None
+    week_of_manufacture: int | None = None
+    input_power_nominal: int | None = None
+    input_power_minimum_dim: int | None = None
+    mains_voltage_minimum: int | None = None
+    mains_voltage_maximum: int | None = None
+    light_output_nominal: int | None = None
+    cri: int | None = None
+    cct: int | None = None
+    light_distribution_type: str | None = None
+    luminaire_color: str | None = None
+    luminaire_identification: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DaliGearConfig:
+    """Writable IEC 62386-102 configuration variables of one control gear.
+
+    These change only when written, so they are read on the full bus scan and
+    cached in between rather than queried on every poll.
+    """
+
+    min_level: int = 1
+    max_level: int | None = None
+    system_failure_level: int | None = None
+    fade_time: int | None = None
+    fade_rate: int | None = None
+    extended_fade_time_base: int | None = None
+    extended_fade_time_multiplier: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DaliGearData(DaliDeviceData):
     """State and identification data for one DALI control gear."""
 
     level: int | None = None
     min_level: int = 1
     max_level: int | None = None
+    system_failure_level: int | None = None
+    fade_time: int | None = None
+    fade_rate: int | None = None
+    extended_fade_time_base: int | None = None
+    extended_fade_time_multiplier: int | None = None
     linear_dimming: bool = False
     device_types: tuple[int, ...] = ()
+    luminaire: DaliLuminaireData | None = None
+
+
+class DaliMetadataStore(Store[dict[str, Any]]):
+    """Store for the cached memory bank 0 identification data."""
+
+    @override
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Discard a cache written by an earlier decoding of memory bank 0.
+
+        The bank is static, so the entries are simply dropped and read again
+        rather than converted; the deferred enrichment picks them up in the
+        background on the next start.
+        """
+        return {}
 
 
 class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
@@ -90,6 +267,88 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         self._refresh_lock = asyncio.Lock()
         # Control gear ever seen, to tell a first discovery from a recovery.
         self._seen_gear: set[int] = set()
+        self._initial_refresh = True
+        self._bus_unpowered = False
+        self._metadata: dict[int, DaliDeviceData] = {}
+        self._luminaire: dict[int, DaliLuminaireData] = {}
+        self._gear_config: dict[int, DaliGearConfig] = {}
+        self._store: Store[dict[str, Any]] = DaliMetadataStore(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{config_entry.entry_id}_metadata"
+        )
+
+    async def async_load_metadata_cache(self) -> None:
+        """Restore identification metadata persisted from earlier sessions.
+
+        Memory-bank identification data is static per device, so reading it back
+        from storage lets the initial refresh skip the slow byte-by-byte bank
+        reads whenever a device has been seen before.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            return
+        for address, values in stored.get("gear", {}).items():
+            self._metadata[int(address)] = DaliDeviceData(**values)
+        for address, values in stored.get("luminaire", {}).items():
+            self._luminaire[int(address)] = DaliLuminaireData(**values)
+
+    def _persist_metadata(self) -> None:
+        """Schedule a debounced save of the identification metadata caches."""
+        self._store.async_delay_save(self._metadata_snapshot, METADATA_SAVE_DELAY)
+
+    @callback
+    def _metadata_snapshot(self) -> dict[str, Any]:
+        """Return the identification caches in a JSON-serializable form."""
+        return {
+            "gear": {
+                str(address): asdict(metadata)
+                for address, metadata in self._metadata.items()
+            },
+            "luminaire": {
+                str(address): asdict(luminaire)
+                for address, luminaire in self._luminaire.items()
+            },
+        }
+
+    def _apply_device_metadata(
+        self, address: int, metadata: DaliDeviceData, *, input_device: bool
+    ) -> None:
+        """Push freshly read identification data onto an existing registry device.
+
+        Gear entities are created from the fast initial scan before
+        identification data has been read, so the registry entry is updated in
+        place once the deferred memory-bank read completes.
+        """
+        device_registry = dr.async_get(self.hass)
+        device = device_registry.async_get_device_by_identifier(
+            (
+                DOMAIN,
+                registry_identifier(
+                    self.config_entry.entry_id, address, input_device=input_device
+                ),
+            ),
+            self.config_entry.entry_id,
+        )
+        if device is None or metadata == DaliDeviceData():
+            return
+        device_registry.async_update_device(
+            device.id,
+            model_id=str(metadata.gtin) if metadata.gtin is not None else UNDEFINED,
+            serial_number=(
+                serial_number
+                if (serial_number := _registry_serial_number(metadata)) is not None
+                else UNDEFINED
+            ),
+            sw_version=(
+                metadata.firmware_version
+                if metadata.firmware_version is not None
+                else UNDEFINED
+            ),
+            hw_version=(
+                metadata.hardware_version
+                if metadata.hardware_version is not None
+                else UNDEFINED
+            ),
+        )
 
     async def async_update_gear(
         self, address: int, optimistic_level: int | None = None
@@ -135,18 +394,45 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 LOGGER.info("DALI control gear %d is responding again", address)
         self._seen_gear |= current
 
-    async def _query_gear(self, address: int) -> DaliGearData | None:
+    async def async_update_gear_config(self, address: int) -> None:
+        """Re-read a gear's configuration variables after a write.
+
+        The gear arbitrates what it stores — it clamps levels against its
+        physical minimum and the opposing limit, and snaps an extended fade
+        time to a representable step — so the written value is dropped from
+        the cache and read back rather than assumed.
+        """
+        self._gear_config.pop(address, None)
+        await self.async_update_gear(address)
+
+    async def async_rescan(self) -> None:
+        """Force a full bus scan so gear added since the last scan is found."""
+        self._last_full_scan = None
+        await self.async_refresh()
+
+    async def _query_gear(
+        self, address: int, *, fast: bool = False, refresh_config: bool = False
+    ) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent.
 
         A known gear is queried again after a miss so a single dropped DALI
-        response does not flip a light to unavailable.
+        response does not flip a light to unavailable. ``fast`` skips the slow
+        memory-bank identification read so the initial refresh does not block
+        setup; it is filled in later. ``refresh_config`` re-reads the cached
+        configuration variables.
         """
-        gear = await self._query_gear_once(address)
+        gear = await self._query_gear_once(
+            address, fast=fast, refresh_config=refresh_config
+        )
         if gear is None and self.data and address in self.data:
-            gear = await self._query_gear_once(address)
+            gear = await self._query_gear_once(
+                address, fast=fast, refresh_config=refresh_config
+            )
         return gear
 
-    async def _query_gear_once(self, address: int) -> DaliGearData | None:
+    async def _query_gear_once(
+        self, address: int, *, fast: bool = False, refresh_config: bool = False
+    ) -> DaliGearData | None:
         """Return a gear's state and metadata, or None when absent."""
         gear_address = GearShort(address)
         try:
@@ -168,25 +454,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             if not device_types:
                 return None
             level = await self.driver.send(QueryActualLevel(gear_address))
-            min_level = _response_value(
-                await self.driver.send(QueryMinLevel(gear_address))
-            )
-            if min_level is None or not 1 <= min_level <= 254:
-                # A dropped minimum-level reply would otherwise reset a known
-                # minimum to 1 and skew the conversion; keep the cached minimum
-                # for gear already seen, defaulting only for newly found gear.
-                cached = self.data.get(address) if self.data else None
-                min_level = cached.min_level if cached is not None else 1
-            max_level = _response_value(
-                await self.driver.send(QueryMaxLevel(gear_address))
-            )
-            if max_level is None or not 1 <= max_level <= 254:
-                # A dropped or out-of-range maximum-level reply would otherwise
-                # clear a known maximum and lift the command clamp to full power;
-                # keep the cached maximum for gear already seen, defaulting to no
-                # cap only for newly found gear.
-                cached = self.data.get(address) if self.data else None
-                max_level = cached.max_level if cached is not None else None
+            config = self._gear_config.get(address)
+            if config is None or refresh_config:
+                config = await self._query_gear_config(gear_address)
+                self._gear_config[address] = config
             linear_dimming = False
             if DEVICE_TYPE_LED in device_types:
                 curve = await self.driver.send(QueryDimmingCurve(gear_address))
@@ -205,21 +476,177 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         except DALISequenceError:
             return None
 
+        metadata = self._metadata.get(address)
+        if metadata is None and not fast:
+            metadata = await self._query_metadata(gear_address)
+            self._metadata[address] = metadata
+            self._apply_device_metadata(address, metadata, input_device=False)
+            self._persist_metadata()
+        if metadata is None:
+            metadata = DaliDeviceData()
+
         return DaliGearData(
             level=_dali_level_to_brightness(_response_value(level), linear_dimming),
-            min_level=min_level,
-            max_level=max_level,
+            min_level=config.min_level,
+            max_level=config.max_level,
+            system_failure_level=config.system_failure_level,
+            fade_time=config.fade_time,
+            fade_rate=config.fade_rate,
+            extended_fade_time_base=config.extended_fade_time_base,
+            extended_fade_time_multiplier=config.extended_fade_time_multiplier,
             linear_dimming=linear_dimming,
             device_types=device_types,
+            luminaire=self._luminaire.get(address),
+            gtin=metadata.gtin,
+            identification_number=metadata.identification_number,
+            serial_no=metadata.serial_no,
+            batch_no=metadata.batch_no,
+            firmware_version=metadata.firmware_version,
+            hardware_version=metadata.hardware_version,
+            last_memory_bank=metadata.last_memory_bank,
         )
+
+    async def _query_gear_config(self, gear_address: GearShort) -> DaliGearConfig:
+        """Read the IEC 62386-102 configuration variables of one control gear."""
+        min_level = _response_value(await self.driver.send(QueryMinLevel(gear_address)))
+        if min_level is None or not 1 <= min_level <= 254:
+            min_level = 1
+        max_level = _response_value(await self.driver.send(QueryMaxLevel(gear_address)))
+        if max_level is not None and not 1 <= max_level <= 254:
+            max_level = None
+        # Every byte is a valid system failure level, so unlike the dimming
+        # limits there is no out-of-range answer to reject.
+        system_failure_level = _level_or_mask(
+            await self.driver.send(QuerySystemFailureLevel(gear_address))
+        )
+        # The library's .fade_time/.fade_rate properties read their nibbles out
+        # of a framing-error frame too, so decode from the checked value.
+        fade = _response_value(
+            await self.driver.send(QueryFadeTimeFadeRate(gear_address))
+        )
+        base, multiplier = _extended_fade_time(
+            await self.driver.send(QueryExtendedFadeTime(gear_address))
+        )
+        return DaliGearConfig(
+            min_level=min_level,
+            max_level=max_level,
+            system_failure_level=system_failure_level,
+            fade_time=None if fade is None else (fade >> 4) & 0x0F,
+            fade_rate=None if fade is None else fade & 0x0F,
+            extended_fade_time_base=base,
+            extended_fade_time_multiplier=multiplier,
+        )
+
+    async def _query_metadata(self, address: GearShort) -> DaliDeviceData:
+        """Read optional identification data from memory bank 0."""
+        try:
+            values = await self.driver.send(info.BANK_0.read_all(address))
+        except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
+            return DaliDeviceData()
+
+        gtin = values.get(info.GTIN)
+        identification_number = values.get(info.IdentificationNumber)
+        serial_no, batch_no = _serial_and_batch_number(identification_number)
+        return DaliDeviceData(
+            gtin=gtin,
+            identification_number=identification_number,
+            serial_no=serial_no,
+            batch_no=batch_no,
+            firmware_version=_firmware_version(values.get(info.FirmwareVersion), gtin),
+            hardware_version=values.get(info.HardwareVersion),
+            last_memory_bank=_memory_int(values.get(info.LastMemoryBank)),
+        )
+
+    async def _read_bank(
+        self, bank: MemoryBank, gear_address: GearShort
+    ) -> dict[type[MemoryValue], Any] | None:
+        """Return every value of one memory bank, or None if it is unreadable.
+
+        A bus unit answers nothing at all for a bank it does not implement, so
+        an absent bank and an unreachable one are indistinguishable here; both
+        leave the caller's data unset until a later read succeeds.
+        """
+        values: dict[type[MemoryValue], Any]
+        try:
+            values = await self.driver.send(bank.read_all(gear_address))
+        except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
+            return None
+        return values
+
+    def _implements_bank(self, address: int, bank_address: int) -> bool:
+        """Return whether a gear can implement the given memory bank.
+
+        Memory bank 0 names the highest bank a bus unit implements. The banks
+        in between need not all be present, so this only rules a read out.
+        """
+        last_bank = self._metadata.get(address, DaliDeviceData()).last_memory_bank
+        return last_bank is None or last_bank >= bank_address
+
+    async def _query_luminaire(
+        self, address: int, gear_address: GearShort
+    ) -> DaliLuminaireData | None:
+        """Read the memory bank 1 luminaire data of one control gear.
+
+        IEC 62386-102 defines only the manufacturer GTIN and luminaire ID. The
+        remaining values are the DiiA Part 251 extension, which a gear declares
+        by setting the content format identifier, so they are left unset
+        without it rather than being read as whatever the OEM stored there.
+        """
+        if not self._implements_bank(address, 1):
+            return None
+        values = await self._read_bank(oem.BANK_1, gear_address)
+        if values is None:
+            return None
+        data = DaliLuminaireData(
+            manufacturer_gtin=_memory_int(values.get(oem.ManufacturerGTIN)),
+            luminaire_id=_memory_int(values.get(oem.LuminaireID)),
+        )
+        if _memory_int(values.get(oem.ContentFormatID)) != PART_251_CONTENT_FORMAT:
+            return data
+        return replace(
+            data,
+            year_of_manufacture=_memory_int(values.get(oem.YearOfManufacture)),
+            week_of_manufacture=_memory_int(values.get(oem.WeekOfManufacture)),
+            input_power_nominal=_memory_int(values.get(oem.InputPowerNominal)),
+            input_power_minimum_dim=_memory_int(values.get(oem.InputPowerMinimumDim)),
+            mains_voltage_minimum=_memory_int(values.get(oem.MainsVoltageMinimum)),
+            mains_voltage_maximum=_memory_int(values.get(oem.MainsVoltageMaximum)),
+            light_output_nominal=_memory_int(values.get(oem.LightOutputNominal)),
+            cri=_memory_int(values.get(oem.CRI)),
+            # Gear implementing IEC 62386-209 answers a string here instead of
+            # a temperature; its live Tc reaches Home Assistant as a light
+            # attribute, so there is nothing to report in this sensor.
+            cct=_memory_int(values.get(oem.CCT)),
+            light_distribution_type=_memory_str(values.get(oem.LightDistributionType)),
+            luminaire_color=_memory_str(values.get(oem.LuminaireColor)),
+            luminaire_identification=_memory_str(
+                values.get(oem.LuminaireIdentification)
+            ),
+        )
+
+    async def _read_static_gear_banks(self, address: int) -> None:
+        """Read and cache the banks a control gear only writes at manufacture.
+
+        Bank 1 alone is well over a hundred locations, so a gear whose values
+        are already cached, from an earlier session or this one, is left alone.
+        """
+        gear_address = GearShort(address)
+        if (
+            address not in self._luminaire
+            and (luminaire := await self._query_luminaire(address, gear_address))
+            is not None
+        ):
+            self._luminaire[address] = luminaire
 
     @override
     async def _async_update_data(self) -> dict[int, DaliGearData]:
         """Refresh known gear, scanning the whole bus periodically.
 
         Every cycle re-queries the gear already known so lights track external
-        changes, but the full 64-address scan only runs every
-        ``FULL_SCAN_INTERVAL`` to keep bus traffic low.
+        changes, but the full 64-address scan and the unaddressed-device checks
+        only run every ``FULL_SCAN_INTERVAL`` to keep bus traffic low. The
+        configuration variables are re-read on the full scan too, as they only
+        change when written, here or by another controller on the bus.
         """
         if not self.driver.is_connected:
             # The interface is gone, typically unplugged. Reloading opens the
@@ -231,6 +658,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                 translation_domain=DOMAIN,
                 translation_key="connection_lost",
             )
+        fast = self._initial_refresh
         now = self.hass.loop.time()
         full_scan = (
             self._last_full_scan is None
@@ -243,23 +671,230 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         try:
             async with self._refresh_lock:
                 for address in addresses:
-                    gear = await self._query_gear(address)
+                    gear = await self._query_gear(
+                        address, fast=fast, refresh_config=full_scan
+                    )
                     if gear is not None:
                         data[address] = gear
             if full_scan:
                 LOGGER.info("Found %d control gear", len(data))
         except TransmissionError as err:
-            # The interface rejected a frame, e.g. because the bus lost power or
-            # sagged under load mid-operation; fail the update so entities go
-            # unavailable until it recovers.
+            # The interface rejected a frame; a bus-voltage code means the bus
+            # lost power or sagged under load mid-operation. Surface the repair
+            # and fail the update so entities go unavailable until it recovers.
+            raise_bus_voltage_issue(self.hass, self.config_entry, err)
+            self._bus_unpowered = err.error_code == _BUS_VOLTAGE_ERROR_CODE
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
             ) from err
-        if full_scan:
-            self._last_full_scan = now
+        # The bus answered, so clear any power repair a previous cycle raised.
+        if self._bus_unpowered:
+            clear_bus_voltage_issues(self.hass, self.config_entry.entry_id)
+            self._bus_unpowered = False
         self._log_availability_transitions(data)
+        if not full_scan:
+            return data
+        self._last_full_scan = now
+        # A re-addressed gear must not inherit the previous occupant's config.
+        self._gear_config = {
+            address: config
+            for address, config in self._gear_config.items()
+            if address in data
+        }
+        self._update_unaddressed_gear_issue(await self._has_unaddressed_gear())
+        self._update_address_collision_issue(await self._detect_address_collisions())
+        self._initial_refresh = False
         return data
+
+    async def async_enrich_deferred_data(self) -> None:
+        """Read the identification and luminaire data deferred past setup.
+
+        The initial refresh skips the slow memory-bank reads so setup completes
+        quickly. This runs once afterwards to read identification metadata for
+        every discovered gear, update their registry entries, and trigger a
+        normal refresh. The luminaire bank is read here as well: it holds data
+        written at manufacture, so one read per gear covers the lifetime of the
+        installation and is cached across restarts.
+        """
+        try:
+            for address in list(self.data or {}):
+                if address not in self._metadata:
+                    metadata = await self._query_metadata(GearShort(address))
+                    self._metadata[address] = metadata
+                    self._apply_device_metadata(address, metadata, input_device=False)
+                await self._read_static_gear_banks(address)
+        except OSError, TimeoutError:
+            # A transport error here only delays enrichment; the periodic
+            # refresh reads any still-missing metadata.
+            LOGGER.debug("Deferred DALI metadata read failed; retrying on next poll")
+        self._persist_metadata()
+        await self.async_refresh()
+
+    async def _has_unaddressed_gear(self) -> bool:
+        """Return whether any control gear on the bus lacks a short address."""
+        try:
+            response = await self.driver.send(QueryMissingShortAddress(GearBroadcast()))
+        except (OSError, TimeoutError) as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="update_failed",
+            ) from err
+        return response is not None and bool(response.value)
+
+    def _update_unaddressed_gear_issue(self, unaddressed: bool) -> None:
+        """Create or remove the repair issue for unaddressed control gear."""
+        issue_id = unaddressed_gear_issue_id(self.config_entry.entry_id)
+        if not unaddressed:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            data={"entry_id": self.config_entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_UNADDRESSED_GEAR,
+            translation_placeholders={"title": self.config_entry.title},
+        )
+
+    async def _gear_present(self, address: int) -> bool:
+        """Return whether a single gear answers on a short address."""
+        response = await self.driver.send(QueryControlGearPresent(GearShort(address)))
+        return response is not None and bool(response.value)
+
+    async def _probe_collides(self, gear_address: GearShort) -> bool | None:
+        """Probe a short address once for a collision framing error.
+
+        Returns True on a framing error (several gear answered over each other),
+        False when one gear answered cleanly, and None when no gear answered at
+        all. An empty address answers nothing, so the first silent probe ends it
+        to keep the full-bus scan from waiting out timeouts per vacant address.
+        """
+        answered = False
+        for probe in _COLLISION_PROBES:
+            try:
+                response = await self.driver.send(probe(gear_address))
+            except (OSError, TimeoutError) as err:
+                raise UpdateFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="update_failed",
+                ) from err
+            if response is None or response.raw_value is None:
+                if not answered:
+                    return None
+                continue
+            answered = True
+            if response.raw_value.error:
+                return True
+        return False if answered else None
+
+    async def _short_address_collides(self, address: int) -> bool:
+        """Return whether more than one gear answers on a short address.
+
+        A lone gear can glitch a single frame, so the collision must reproduce
+        across two probe rounds; an empty or singly-occupied address never does.
+        """
+        gear_address = GearShort(address)
+        for _ in range(2):
+            if await self._probe_collides(gear_address) is not True:
+                return False
+        return True
+
+    async def _detect_address_collisions(self) -> list[int]:
+        """Return the gear short addresses answered by more than one device."""
+        return [
+            address
+            for address in range(64)
+            if await self._short_address_collides(address)
+        ]
+
+    def _update_address_collision_issue(self, collisions: list[int]) -> None:
+        """Create or remove the repair issue for short-address collisions."""
+        issue_id = address_collision_issue_id(self.config_entry.entry_id)
+        if not collisions:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            data={"entry_id": self.config_entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_ADDRESS_COLLISION,
+            translation_placeholders={
+                "title": self.config_entry.title,
+                "addresses": ", ".join(str(address) for address in collisions),
+            },
+        )
+
+    async def _find_gear_by_serial(
+        self, serial: int, *, exclude: set[int]
+    ) -> int | None:
+        """Return the short address of the gear with a given serial number."""
+        for address in range(64):
+            if address in exclude or not await self._gear_present(address):
+                continue
+            metadata = await self._query_metadata(GearShort(address))
+            if metadata.identification_number == serial:
+                return address
+        return None
+
+    async def _resolve_address_collision(self, address: int) -> None:
+        """Re-address the gear colliding on a single short address.
+
+        The shared address is cleared on every gear that holds it (they all
+        answer it), the freed gear are re-addressed into other free addresses,
+        and the gear whose identity was recorded at the old address is moved
+        back onto it so automations keep targeting the same fixture. Without a
+        recorded identity the address is left to whichever gear took it.
+        """
+        wanted = self._metadata.get(address)
+        wanted_serial = wanted.identification_number if wanted else None
+        occupied = {
+            other
+            for other in range(64)
+            if other != address and await self._gear_present(other)
+        }
+        await self.driver.send(GearDTR0(255))
+        await self.driver.send(SetShortAddress(GearShort(address)))
+        # Keep the old address reserved so the recorded fixture can reclaim it.
+        available = [a for a in range(64) if a not in occupied and a != address]
+        await self.driver.send(
+            Commissioning(available_addresses=available, readdress=False),
+            progress=_log_commissioning_progress,
+        )
+        if wanted_serial is None:
+            return
+        new_address = await self._find_gear_by_serial(wanted_serial, exclude=occupied)
+        if new_address is None or new_address == address:
+            return
+        await self.driver.send(GearDTR0((address << 1) | 1))
+        await self.driver.send(SetShortAddress(GearShort(new_address)))
+
+    async def async_resolve_address_collisions(self) -> bool:
+        """Resolve short-address collisions and return whether any remain."""
+        for address in await self._detect_address_collisions():
+            await self._resolve_address_collision(address)
+        # Force a full bus scan so the re-addressed gear is discovered at once.
+        self._last_full_scan = None
+        await self.async_refresh()
+        remaining = await self._detect_address_collisions()
+        self._update_address_collision_issue(remaining)
+        return bool(remaining)
+
+    async def async_assign_gear_short_addresses(self) -> bool:
+        """Address unaddressed control gear and return whether any remain unaddressed."""
+        await self.driver.send(
+            Commissioning(readdress=False), progress=_log_commissioning_progress
+        )
+        unaddressed = await self._has_unaddressed_gear()
+        # Force a full bus scan so newly addressed gear is discovered at once.
+        self._last_full_scan = None
+        await self.async_refresh()
+        return unaddressed
 
     def close(self) -> None:
         """Close the serial transport."""
@@ -285,7 +920,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             name=f"{self._interface_label(title)}/{address} (gear)",
             model=f"{model} (address {address})",
             model_id=str(data.gtin) if data.gtin is not None else None,
-            serial_number=data.serial_no,
+            serial_number=_registry_serial_number(data),
             sw_version=data.firmware_version,
             hw_version=data.hardware_version,
         )
@@ -375,3 +1010,127 @@ def _response_value(response: object) -> int | None:
     """Return a numeric response value."""
     value = getattr(response, "value", None)
     return value if isinstance(value, int) else None
+
+
+def _memory_value(value: object) -> Any:
+    """Return a memory bank value as a plain Python value.
+
+    A bank answers MASK where a value is read-protected or unimplemented and
+    TMASK where it is only temporarily unavailable; both mean "no reading"
+    here. Scaled values arrive as Decimals, which neither the diagnostics dump
+    nor the metadata store can serialize.
+    """
+    if isinstance(value, FlagValue):
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def _memory_int(value: object) -> int | None:
+    """Return a memory bank value that must be a plain integer."""
+    value = _memory_value(value)
+    return value if isinstance(value, int) else None
+
+
+def _memory_float(value: object) -> float | None:
+    """Return a memory bank value that must be a number."""
+    value = _memory_value(value)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _memory_str(value: object) -> str | None:
+    """Return a memory bank value that must be a string."""
+    value = _memory_value(value)
+    return value if isinstance(value, str) else None
+
+
+def _memory_bool(value: object) -> bool | None:
+    """Return a memory bank value that must be a flag."""
+    value = _memory_value(value)
+    return value if isinstance(value, bool) else None
+
+
+def _serial_and_batch_number(
+    identification_number: object,
+) -> tuple[str | None, str | None]:
+    """Split a bus unit's identification number into serial and batch number.
+
+    The eight bytes of the memory bank 0 identification number carry the serial
+    number in the low three and the batch number in the high five, each written
+    out least significant byte first.
+    """
+    if not isinstance(identification_number, int):
+        return None, None
+    raw = identification_number.to_bytes(8, "little")
+    return (
+        "".join(f"{byte:02X}" for byte in raw[0:3]),
+        "".join(f"{byte:02X}" for byte in raw[3:8]),
+    )
+
+
+def _registry_serial_number(data: DaliDeviceData) -> str | None:
+    """Return the identification number as ``<batch>-<serial>``.
+
+    The device registry has a field for the serial number but none for the
+    batch number memory bank 0 stores alongside it, so the two halves are
+    joined into that one field rather than leaving the batch number out.
+    """
+    if data.batch_no is None:
+        return data.serial_no
+    if data.serial_no is None:
+        return data.batch_no
+    return f"{data.batch_no}-{data.serial_no}"
+
+
+def _firmware_version(version: object, gtin: object) -> str | None:
+    """Return the firmware version, in Tridonic's format on Tridonic units.
+
+    The library renders the two version bytes as "<first>.<second>", but on
+    Tridonic gear the first byte packs the major and minor version the way IEC
+    62386-102 packs a single-byte version, and the second byte is the build
+    number, giving "<major>.<minor>-<build>".
+    """
+    if not isinstance(version, str):
+        return None
+    if not isinstance(gtin, int) or not str(gtin).startswith(TRIDONIC_GTIN_PREFIX):
+        return version
+    first, _, second = version.partition(".")
+    if not first.isdigit() or not second.isdigit():
+        return version
+    packed = int(first)
+    return f"{packed >> 2}.{packed & 0x03}-{second}"
+
+
+def _level_or_mask(response: object) -> int | None:
+    """Return a level response, keeping the gear's MASK answer as a level.
+
+    ``NumericResponseMask`` reports 255 as the string ``"MASK"``, which is a
+    real stored value meaning "keep the current level", not an unreadable one,
+    so it must not be discarded the way ``_response_value`` discards it.
+    """
+    value = getattr(response, "value", None)
+    if value == "MASK":
+        return MASK_LEVEL
+    return value if isinstance(value, int) else None
+
+
+def _extended_fade_time(response: object) -> tuple[int | None, int | None]:
+    """Return the extended fade time base and multiplier of a response.
+
+    ``QueryExtendedFadeTime`` answers with a bare ``Response``, whose ``value``
+    raises on a framing error rather than reporting it, so the backward frame
+    is inspected directly.
+    """
+    raw = getattr(response, "raw_value", None)
+    if raw is None or raw.error:
+        return None, None
+    byte = raw.as_integer
+    return byte & 0x0F, (byte >> 4) & 0x07
+
+
+def _log_commissioning_progress(update: str | progress) -> None:
+    """Log progress messages from the commissioning sequence."""
+    message = update if isinstance(update, str) else update.message
+    if message:
+        LOGGER.debug("Commissioning: %s", message)

@@ -11,7 +11,7 @@
   "documentation": "https://www.home-assistant.io/integrations/dali",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "quality_scale": "silver",
+  "quality_scale": "gold",
   "requirements": ["python-dali==0.16", "serialx==1.14.0"],
   "usb": [
     {

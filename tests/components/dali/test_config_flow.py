@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from dali.driver.serial import DriverLubaRs232
 from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant.components.dali.const import CONF_BUS_POWER, DOMAIN
+from homeassistant.components.dali.const import (
+    CONF_BUS_POWER,
+    CONF_HAS_BUS_SUPPLY,
+    DOMAIN,
+)
 from homeassistant.components.usb import (
     SerialDevice,
     USBDevice,
@@ -96,6 +100,7 @@ async def test_usb_discovery(hass: HomeAssistant, mock_setup_entry: AsyncMock) -
     assert result["data"] == {
         CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2",
         CONF_BUS_POWER: False,
+        CONF_HAS_BUS_SUPPLY: False,
     }
     assert result["result"].unique_id
     assert len(mock_setup_entry.mock_calls) == 1
@@ -336,6 +341,7 @@ async def test_user_flow(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> No
     assert result["data"] == {
         CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2",
         CONF_BUS_POWER: False,
+        CONF_HAS_BUS_SUPPLY: False,
     }
     assert result["result"].unique_id == usb_unique_id_from_service_info(
         usb_service_info_from_device(USB_PORT)
@@ -393,7 +399,11 @@ async def test_user_flow_non_usb_port(
         )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {CONF_DEVICE: "/dev/ttyUSB0", CONF_BUS_POWER: False}
+    assert result["data"] == {
+        CONF_DEVICE: "/dev/ttyUSB0",
+        CONF_BUS_POWER: False,
+        CONF_HAS_BUS_SUPPLY: False,
+    }
     assert result["result"].unique_id is None
     assert len(mock_setup_entry.mock_calls) == 1
 
@@ -482,6 +492,7 @@ async def test_user_flow_enable_bus_power(
     assert result["data"] == {
         CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2",
         CONF_BUS_POWER: True,
+        CONF_HAS_BUS_SUPPLY: True,
     }
     assert result["result"].unique_id == usb_unique_id_from_service_info(
         usb_service_info_from_device(USB_PORT)
@@ -521,6 +532,7 @@ async def test_usb_discovery_enable_bus_power(
     assert result["data"] == {
         CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2",
         CONF_BUS_POWER: True,
+        CONF_HAS_BUS_SUPPLY: True,
     }
     assert result["result"].unique_id == usb_unique_id_from_service_info(DISCOVERY_INFO)
     assert len(mock_setup_entry.mock_calls) == 1
@@ -584,6 +596,41 @@ async def test_user_flow_already_configured(hass: HomeAssistant) -> None:
         )
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {CONF_DEVICE: "/dev/ttyACM0"}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_user_flow_serial_path_already_configured(hass: HomeAssistant) -> None:
+    """Test re-adding the same serial path aborts even without a USB unique ID."""
+    serial_port = SerialDevice(
+        device="/dev/ttyUSB0",
+        serial_number=None,
+        manufacturer=None,
+        description=None,
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_DEVICE: "/dev/ttyUSB0"},
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "homeassistant.components.dali.config_flow.async_scan_serial_ports",
+            return_value=[serial_port],
+        ),
+        patch(
+            "homeassistant.components.dali.config_flow.usb.get_serial_by_id",
+            return_value="/dev/ttyUSB0",
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_DEVICE: "/dev/ttyUSB0"}
         )
 
     assert result["type"] is FlowResultType.ABORT

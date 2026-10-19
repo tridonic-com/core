@@ -34,6 +34,129 @@
       }
     }
   },
+  "entity": {
+    "button": {
+      "search_devices": {
+        "name": "Search for devices"
+      }
+    },
+    "number": {
+      "extended_fade_time": {
+        "name": "Extended fade time"
+      },
+      "max_level": {
+        "name": "Maximum level"
+      },
+      "min_level": {
+        "name": "Minimum level"
+      },
+      "system_failure_level": {
+        "name": "System failure level"
+      }
+    },
+    "select": {
+      "fade_rate": {
+        "name": "Fade rate",
+        "state": {
+          "2_8_steps_s": "2.8 steps/s",
+          "4_0_steps_s": "4.0 steps/s",
+          "5_6_steps_s": "5.6 steps/s",
+          "7_9_steps_s": "7.9 steps/s",
+          "11_2_steps_s": "11.2 steps/s",
+          "15_8_steps_s": "15.8 steps/s",
+          "22_4_steps_s": "22.4 steps/s",
+          "31_6_steps_s": "31.6 steps/s",
+          "44_7_steps_s": "44.7 steps/s",
+          "63_3_steps_s": "63.3 steps/s",
+          "89_4_steps_s": "89.4 steps/s",
+          "126_5_steps_s": "126.5 steps/s",
+          "178_9_steps_s": "178.9 steps/s",
+          "253_0_steps_s": "253.0 steps/s",
+          "357_8_steps_s": "357.8 steps/s"
+        }
+      },
+      "fade_time": {
+        "name": "Fade time",
+        "state": {
+          "0_7_s": "0.7 seconds",
+          "1_0_s": "1.0 seconds",
+          "1_4_s": "1.4 seconds",
+          "2_0_s": "2.0 seconds",
+          "2_8_s": "2.8 seconds",
+          "4_0_s": "4.0 seconds",
+          "5_7_s": "5.7 seconds",
+          "8_0_s": "8.0 seconds",
+          "11_3_s": "11.3 seconds",
+          "16_0_s": "16.0 seconds",
+          "22_6_s": "22.6 seconds",
+          "32_0_s": "32.0 seconds",
+          "45_3_s": "45.3 seconds",
+          "64_0_s": "64.0 seconds",
+          "90_5_s": "90.5 seconds",
+          "extended": "Use extended fade time"
+        }
+      }
+    },
+    "sensor": {
+      "cct": {
+        "name": "Correlated color temperature"
+      },
+      "cri": {
+        "name": "Color rendering index"
+      },
+      "dali_address": {
+        "name": "DALI address"
+      },
+      "identification_number": {
+        "name": "Identification number"
+      },
+      "input_power_minimum_dim": {
+        "name": "Input power at minimum dim level"
+      },
+      "input_power_nominal": {
+        "name": "Nominal input power"
+      },
+      "light_distribution_type": {
+        "name": "Light distribution type",
+        "state": {
+          "not_specified": "Not specified",
+          "reserved": "Reserved",
+          "type_i": "Type I",
+          "type_ii": "Type II",
+          "type_iii": "Type III",
+          "type_iv": "Type IV",
+          "type_v": "Type V"
+        }
+      },
+      "light_output_nominal": {
+        "name": "Nominal light output"
+      },
+      "luminaire_color": {
+        "name": "Luminaire color"
+      },
+      "luminaire_id": {
+        "name": "Luminaire ID"
+      },
+      "luminaire_identification": {
+        "name": "Luminaire identification"
+      },
+      "mains_voltage_maximum": {
+        "name": "Maximum mains voltage"
+      },
+      "mains_voltage_minimum": {
+        "name": "Minimum mains voltage"
+      },
+      "manufacturer_gtin": {
+        "name": "Luminaire manufacturer GTIN"
+      },
+      "week_of_manufacture": {
+        "name": "Week of manufacture"
+      },
+      "year_of_manufacture": {
+        "name": "Year of manufacture"
+      }
+    }
+  },
   "exceptions": {
     "cannot_connect": {
       "message": "Unable to connect to the DALI interface"
@@ -46,6 +169,70 @@
     },
     "update_failed": {
       "message": "Unable to communicate with the DALI interface"
+    }
+  },
+  "issues": {
+    "address_collision": {
+      "fix_flow": {
+        "abort": {
+          "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+          "collision_remaining": "Some control gear still shares a short address. Check the DALI bus wiring and power, then try again.",
+          "not_loaded": "[%key:component::dali::issues::unaddressed_gear::fix_flow::abort::not_loaded%]",
+          "program_failed": "[%key:component::dali::issues::unaddressed_gear::fix_flow::abort::program_failed%]"
+        },
+        "progress": {
+          "resolve": "Clearing the shared short address and re-addressing the affected control gear. This can take a few minutes, depending on how many devices are connected."
+        },
+        "step": {
+          "confirm": {
+            "description": "Two or more pieces of DALI control gear on {title} share short addresses {addresses}. Home Assistant cannot control them individually, and commands meant for one reach all of them.\n\nSelect **Re-address gear** to clear the shared address and assign free short addresses to the affected gear. The fixture Home Assistant already knew at each address keeps that address, so your automations keep working; the newly added, conflicting fixture gets a free address and appears as a new device.\n\nWhen Home Assistant never saw a single device at an address before the collision, it cannot tell which fixture should keep it, so the addresses are assigned arbitrarily and automations targeting that address may now control a different fixture.\n\nIf another DALI controller manages this bus, resolve the collision with that controller instead to avoid conflicts.",
+            "submit": "Re-address gear",
+            "title": "Resolve DALI short-address collision"
+          }
+        }
+      },
+      "title": "DALI control gear sharing a short address on {title}"
+    },
+    "bus_no_supply": {
+      "description": "The DALI bus on {title} has no power, so Home Assistant cannot reach any devices. This interface has no integrated bus power supply, so an external DALI bus power supply is required.\n\nCheck that a DALI bus power supply is connected and working. Home Assistant keeps retrying and clears this issue once the bus is powered again.",
+      "title": "No power on the DALI bus on {title}"
+    },
+    "bus_overload": {
+      "description": "The DALI bus on {title} dropped below the voltage needed to communicate, even though its power supply is switched on. The bus power supply is most likely overloaded or undersized for the connected control gear and sensors. A long or faulty bus cable can have the same effect.\n\nUse a DALI bus power supply with a higher current rating, reduce the number of devices on the bus, or check the bus wiring. Home Assistant keeps retrying and clears this issue once the bus is stable again.",
+      "title": "DALI bus power supply overloaded on {title}"
+    },
+    "bus_voltage_error": {
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "description": "The DALI bus on {title} has no power, so Home Assistant cannot reach any devices. This interface has an integrated power supply that can power the bus.\n\nSelect **Switch on bus power**, but only when no separate DALI power supply is connected, otherwise leave it off to avoid two power supplies on the bus.",
+            "submit": "Switch on bus power",
+            "title": "Power the DALI bus"
+          }
+        }
+      },
+      "title": "No power on the DALI bus on {title}"
+    },
+    "unaddressed_gear": {
+      "fix_flow": {
+        "abort": {
+          "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+          "not_loaded": "The DALI interface {title} is not loaded. Enable or reload the integration entry, then try again.",
+          "program_failed": "A device did not accept its new short address. Check the DALI bus wiring and power, then try again.",
+          "unaddressed_remaining": "Some devices are still without a short address. All 64 short addresses on this DALI bus may be in use. Remove unused devices from the bus, then try again."
+        },
+        "progress": {
+          "assign": "Searching the DALI bus and assigning short addresses. This can take a few minutes, depending on how many devices are connected."
+        },
+        "step": {
+          "confirm": {
+            "description": "Home Assistant found DALI control gear on {title} that has no short address. Without a short address, these lights cannot be controlled individually and do not appear in Home Assistant.\n\nSelect **Assign addresses** to assign free short addresses to these devices. Devices that already have a short address keep it.\n\nIf another DALI controller manages this bus, assign addresses with that controller instead to avoid conflicts.\n\nAfter the addresses are assigned, the new lights appear in Home Assistant automatically.",
+            "submit": "Assign addresses",
+            "title": "Assign DALI short addresses"
+          }
+        }
+      },
+      "title": "DALI devices without a short address on {title}"
     }
   }
 }
