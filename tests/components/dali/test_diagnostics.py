@@ -21,7 +21,8 @@ async def test_entry_diagnostics(
     snapshot: SnapshotAssertion,
     fake_dali_driver: FakeDaliDriver,
 ) -> None:
-    """Test config entry diagnostics dump the discovered gears."""
+    """Test config entry diagnostics dump gears and discovered instances."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 1, (1, 3): 3}
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
     )

@@ -9,6 +9,10 @@ from typing import TypeVar
 from unittest.mock import AsyncMock, patch
 
 from dali.command import Command, Response
+from dali.device.general import (
+    DTR0 as DeviceDTR0,
+    QueryMissingShortAddress as QueryMissingDeviceShortAddress,
+)
 from dali.exceptions import MemoryLocationNotImplemented
 from dali.frame import BackwardFrame
 from dali.gear.colour import (
@@ -70,6 +74,18 @@ class _FakeGear:
 
     device_types: tuple[int, ...]
     serial: int
+
+
+class FakeDevInstMap:
+    """Fake device/instance type mapper."""
+
+    def __init__(self) -> None:
+        """Initialize an empty mapping."""
+        self.mapping: dict[tuple[int, int], int] = {}
+
+    def autodiscover(self, addr: object = None) -> Generator[None]:
+        """Re-enumerate devices; the fake folds them in during commissioning."""
+        yield from ()
 
 
 class FakeDaliDriver:
@@ -236,6 +252,13 @@ class FakeDaliDriver:
         self._gear_dtr0: int | None = None
         self._commission_available: list[int] | None = None
         self.unaddressed_gears: list[tuple[int, ...]] = []
+        self.dev_inst_map = FakeDevInstMap()
+        self.event_queue: asyncio.Queue[object] = asyncio.Queue()
+        # Each pending control device is a list of (instance, instance_type) tuples.
+        self.unaddressed_devices: list[list[tuple[int, int]]] = []
+        # Instances an autodiscover run folds in, keyed by (address, instance),
+        # modelling a control device a later scan picks up.
+        self.pending_device_instances: dict[tuple[int, int], int] = {}
 
     async def connect(self, *, scan_dev_inst: bool = False) -> None:
         """Connect to the fake interface."""
@@ -245,6 +268,10 @@ class FakeDaliDriver:
     def is_connected(self) -> bool:
         """Return whether the fake interface is still reachable."""
         return self.connected
+
+    def new_dali_rx_queue(self) -> asyncio.Queue[object]:
+        """Return the fake DALI event queue."""
+        return self.event_queue
 
     async def send(
         self, msg: Command | Generator, *, priority: int = 5, progress=None
@@ -261,8 +288,12 @@ class FakeDaliDriver:
     async def _send_command(self, command: Command) -> SimpleNamespace:
         """Return a response for a fake DALI command."""
         self.sent.append(command)
+        if isinstance(command, DeviceDTR0):
+            return SimpleNamespace(value=None)
         if isinstance(command, QueryMissingShortAddress):
             return SimpleNamespace(value=True if self.unaddressed_gears else None)
+        if isinstance(command, QueryMissingDeviceShortAddress):
+            return SimpleNamespace(value=True if self.unaddressed_devices else None)
         if isinstance(command, DTR0):
             self._gear_dtr0 = command.param
             return SimpleNamespace(value=None)
@@ -330,7 +361,18 @@ class FakeDaliDriver:
 
     async def _run_sequence(self, sequence, progress=None):
         """Return a fake sequence response."""
+        if sequence.__name__ == "autodiscover":
+            sequence.close()
+            self.dev_inst_map.mapping.update(self.pending_device_instances)
+            self.pending_device_instances = {}
+            return None
         if sequence.__name__ == "Commissioning":
+            # Gear and device commissioning share the generator name; the
+            # defining module distinguishes which address space it targets.
+            is_device = (
+                sequence.gi_frame is not None
+                and sequence.gi_frame.f_globals["__name__"] == "dali.device.sequences"
+            )
             available = (
                 sequence.gi_frame.f_locals.get("available_addresses")
                 if sequence.gi_frame is not None
@@ -339,6 +381,8 @@ class FakeDaliDriver:
             sequence.close()
             # Commissioning takes bus time on real hardware.
             await asyncio.sleep(0)
+            if is_device:
+                return self._commission_devices()
             self._commission_available = available
             return self._commission()
         if sequence.__name__ == "read_all":
@@ -500,6 +544,15 @@ class FakeDaliDriver:
                 **self.metadata,
                 info.IdentificationNumber: gear.serial,
             }
+
+    def _commission_devices(self) -> None:
+        """Assign free short addresses to unaddressed control devices."""
+        used = {address for address, _instance in self.dev_inst_map.mapping}
+        free = [address for address in range(64) if address not in used]
+        while self.unaddressed_devices and free:
+            address = free.pop(0)
+            for instance, instance_type in self.unaddressed_devices.pop(0):
+                self.dev_inst_map.mapping[(address, instance)] = instance_type
 
     def _close(self) -> None:
         """Close the fake transport."""

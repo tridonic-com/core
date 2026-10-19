@@ -1,13 +1,15 @@
 """Test the Tridonic DALI button platform."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
+from dali.device.general import IdentifyDevice as IdentifyControlDevice
 from dali.gear.general import IdentifyDevice
 import pytest
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
 from homeassistant.components.dali.button import (
     EMERGENCY_BUTTON_TYPES,
+    DaliDeviceIdentify,
     DaliEmergencyButton,
     DaliIdentify,
     DaliSearchDevices,
@@ -73,6 +75,46 @@ async def test_identify_failure_raises_home_assistant_error(
         await button.async_press()
 
 
+async def test_device_identify_press_sends_identify_command(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test the control-device identify button sends the Part 103 command."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {}
+    button = DaliDeviceIdentify(coordinator, entry.entry_id, entry.title, 5)
+
+    await button.async_press()
+
+    assert isinstance(fake_dali_driver.sent[-1], IdentifyControlDevice)
+    assert fake_dali_driver.sent[-1].destination.address == 5
+
+
+async def test_device_identify_setup_adds_button_per_device(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test one identify button is created per control-device address."""
+    fake_dali_driver.dev_inst_map.mapping = {(5, 0): 1, (5, 1): 3, (6, 0): 1}
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    entry.add_to_hass(hass)
+
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    identify_entries = {
+        entity.unique_id
+        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+        if entity.domain == BUTTON_DOMAIN
+    }
+    assert f"{entry.entry_id}_5_controldevice_identify" in identify_entries
+    assert f"{entry.entry_id}_6_controldevice_identify" in identify_entries
+
+
 async def test_identify_setup_adds_button_per_gear(
     hass: HomeAssistant,
     entity_registry: er.EntityRegistry,
@@ -100,43 +142,19 @@ async def test_identify_setup_adds_button_per_gear(
     }
 
 
-async def test_search_devices_press_rescans_the_bus(
+async def test_search_devices_press_runs_discovery(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test pressing the search button runs a fresh full bus scan."""
+    """Test pressing the search button enumerates newly addressed devices."""
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
     coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {}
     button = DaliSearchDevices(coordinator, entry.entry_id, entry.title)
+    fake_dali_driver.pending_device_instances = {(3, 0): 3}
 
-    with patch.object(
-        coordinator, "async_rescan", new_callable=AsyncMock
-    ) as async_rescan:
-        await button.async_press()
+    await button.async_press()
 
-    async_rescan.assert_awaited_once()
-
-
-async def test_search_devices_setup_adds_one_button(
-    hass: HomeAssistant,
-    entity_registry: er.EntityRegistry,
-    fake_dali_driver: FakeDaliDriver,
-) -> None:
-    """Test a single search button is created on the interface device."""
-    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
-    entry.add_to_hass(hass)
-
-    with patch(
-        "homeassistant.components.dali.DriverLubaRs232",
-        return_value=fake_dali_driver,
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-
-    search_entries = [
-        entity
-        for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id)
-        if entity.unique_id == f"{entry.entry_id}_search_devices"
-    ]
-    assert len(search_entries) == 1
+    assert (3, 0, 3) in coordinator.device_instances
 
 
 EMERGENCY_BUTTON_COMMANDS = {

@@ -14,15 +14,47 @@ SUPPORTED_GEAR_DEVICE_TYPES = (
     DEVICE_TYPE_EMERGENCY,
 )
 
+# IEC 62386 control-gear device types not yet supported by the integration.
+DEVICE_TYPE_FLUORESCENT = 0
+DEVICE_TYPE_HID = 2
+DEVICE_TYPE_HALOGEN = 3
+DEVICE_TYPE_INCANDESCENT = 4
+DEVICE_TYPE_DC = 5
+DEVICE_TYPE_SWITCHING = 7
+
+# IEC 62386 control-device instance types.
+INSTANCE_TYPE_PUSH_BUTTON = 1
+INSTANCE_TYPE_ABSOLUTE_INPUT = 2
+INSTANCE_TYPE_OCCUPANCY = 3
+INSTANCE_TYPE_LIGHT_SENSOR = 4
+INSTANCE_TYPE_GENERAL_SENSOR = 6
+
 # Human-readable names for each control-gear device type. The IEC 62386 part
 # specifying a device type DTn is part 2(01+n) (e.g. DT6 → IEC 62386-207).
 GEAR_DEVICE_TYPE_NAMES: dict[int, str] = {
+    DEVICE_TYPE_FLUORESCENT: "Fluorescent lamp",
     DEVICE_TYPE_EMERGENCY: "Self-contained emergency lighting",
+    DEVICE_TYPE_HID: "HID lamp",
+    DEVICE_TYPE_HALOGEN: "Low-voltage halogen lamp",
+    DEVICE_TYPE_INCANDESCENT: "Incandescent lamp dimmer",
+    DEVICE_TYPE_DC: "DC-controlled dimmer",
     DEVICE_TYPE_LED: "LED module",
+    DEVICE_TYPE_SWITCHING: "Switching function",
     DEVICE_TYPE_COLOUR: "Colour control",
 }
 
+# Human-readable names for each control-device instance type. The IEC 62386
+# part specifying an instance type n is part 3(00+n) (e.g. type 4 → 62386-304).
+DEVICE_INSTANCE_TYPE_NAMES: dict[int, str] = {
+    INSTANCE_TYPE_PUSH_BUTTON: "Push button",
+    INSTANCE_TYPE_ABSOLUTE_INPUT: "Absolute input device",
+    INSTANCE_TYPE_OCCUPANCY: "Occupancy sensor",
+    INSTANCE_TYPE_LIGHT_SENSOR: "Light sensor",
+    INSTANCE_TYPE_GENERAL_SENSOR: "General purpose sensor",
+}
+
 ISSUE_UNADDRESSED_GEAR = "unaddressed_gear"
+ISSUE_UNADDRESSED_CONTROLDEVICE = "unaddressed_controldevice"
 ISSUE_BUS_VOLTAGE_ERROR = "bus_voltage_error"
 ISSUE_BUS_OVERLOAD = "bus_overload"
 ISSUE_ADDRESS_COLLISION = "address_collision"
@@ -43,6 +75,11 @@ def registry_identifier(entry_id: str, address: int, *, input_device: bool) -> s
 def unaddressed_gear_issue_id(entry_id: str) -> str:
     """Return the repair issue ID for unaddressed gear on a DALI bus."""
     return f"{ISSUE_UNADDRESSED_GEAR}_{entry_id}"
+
+
+def unaddressed_control_device_issue_id(entry_id: str) -> str:
+    """Return the repair issue ID for unaddressed control devices on a DALI bus."""
+    return f"{ISSUE_UNADDRESSED_CONTROLDEVICE}_{entry_id}"
 
 
 def bus_voltage_error_issue_id(entry_id: str) -> str:

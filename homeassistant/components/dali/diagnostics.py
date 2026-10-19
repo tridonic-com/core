@@ -32,4 +32,5 @@ async def async_get_config_entry_diagnostics(
             str(address): _serialize(asdict(gear))
             for address, gear in coordinator.data.items()
         },
+        "device_instances": [list(item) for item in coordinator.device_instances],
     }

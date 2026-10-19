@@ -1,6 +1,18 @@
 # serializer version: 1
 # name: test_entry_diagnostics
   dict({
+    'device_instances': list([
+      list([
+        1,
+        2,
+        1,
+      ]),
+      list([
+        1,
+        3,
+        3,
+      ]),
+    ]),
     'entry_data': dict({
       'device': '/dev/ttyACM0',
     }),

@@ -3,8 +3,9 @@
 from dataclasses import dataclass
 from typing import override
 
-from dali.address import GearShort
+from dali.address import DeviceShort, GearShort
 from dali.command import Command
+from dali.device.general import IdentifyDevice as IdentifyControlDevice
 from dali.exceptions import DALISequenceError, ResponseError
 from dali.gear.emergency import (
     Inhibit,
@@ -111,10 +112,17 @@ async def async_setup_entry(
     entry: DaliConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up identify and rescan button entities for control gear."""
+    """Set up identify button entities for control gear and control devices."""
     coordinator = entry.runtime_data
 
     async_add_entities([DaliSearchDevices(coordinator, entry.entry_id, entry.title)])
+
+    async_add_entities(
+        DaliDeviceIdentify(coordinator, entry.entry_id, entry.title, address)
+        for address in sorted(
+            {address for address, _instance, _type in coordinator.device_instances}
+        )
+    )
 
     known_addresses: set[int] = set()
 
@@ -151,12 +159,31 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(async_add_emergency_buttons))
 
 
-class DaliIdentify(CoordinatorEntity[DaliCoordinator], ButtonEntity):
-    """Button that runs the DALI identify procedure on control gear."""
+class _DaliIdentify(CoordinatorEntity[DaliCoordinator], ButtonEntity):
+    """Base class for the DALI identify procedure button."""
 
     _attr_has_entity_name = True
     _attr_device_class = ButtonDeviceClass.IDENTIFY
     _attr_entity_category = EntityCategory.CONFIG
+
+    @override
+    async def async_press(self) -> None:
+        """Run the identify procedure for 10 seconds."""
+        try:
+            await self.coordinator.driver.send(self._identify_command())
+        except (OSError, TimeoutError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="communication_error",
+            ) from err
+
+    def _identify_command(self) -> Command:
+        """Return the identify command for the addressed device."""
+        raise NotImplementedError
+
+
+class DaliIdentify(_DaliIdentify):
+    """Button that runs the DALI identify procedure on control gear."""
 
     def __init__(
         self, coordinator: DaliCoordinator, entry_id: str, title: str, address: int
@@ -173,24 +200,32 @@ class DaliIdentify(CoordinatorEntity[DaliCoordinator], ButtonEntity):
         """Return whether the DALI gear is responding."""
         return super().available and self._address in self.coordinator.data
 
+    @override
     def _identify_command(self) -> Command:
-        """Return the identify command for the addressed gear."""
         return IdentifyDevice(GearShort(self._address))
 
+
+class DaliDeviceIdentify(_DaliIdentify):
+    """Button that runs the DALI identify procedure on a control device."""
+
+    def __init__(
+        self, coordinator: DaliCoordinator, entry_id: str, title: str, address: int
+    ) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._address = address
+        self._attr_unique_id = f"{entry_id}_{address}_controldevice_identify"
+        self._attr_device_info = coordinator.device_info(
+            entry_id, title, address, input_device=True
+        )
+
     @override
-    async def async_press(self) -> None:
-        """Run the identify procedure for 10 seconds."""
-        try:
-            await self.coordinator.driver.send(self._identify_command())
-        except (OSError, TimeoutError) as err:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="communication_error",
-            ) from err
+    def _identify_command(self) -> Command:
+        return IdentifyControlDevice(DeviceShort(self._address))
 
 
 class DaliSearchDevices(CoordinatorEntity[DaliCoordinator], ButtonEntity):
-    """Button that rescans the DALI bus for control gear."""
+    """Button that rescans the DALI bus for addressed control devices."""
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.CONFIG
@@ -204,8 +239,8 @@ class DaliSearchDevices(CoordinatorEntity[DaliCoordinator], ButtonEntity):
 
     @override
     async def async_press(self) -> None:
-        """Rescan the bus so gear added since the last scan is discovered."""
-        await self.coordinator.async_rescan()
+        """Enumerate control devices that were addressed since the last scan."""
+        await self.coordinator.async_discover_control_devices()
 
 
 class DaliEmergencyButton(CoordinatorEntity[DaliCoordinator], ButtonEntity):

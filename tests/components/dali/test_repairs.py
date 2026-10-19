@@ -13,6 +13,7 @@ from homeassistant.components.dali.const import (
     DOMAIN,
     address_collision_issue_id,
     bus_voltage_error_issue_id,
+    unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
 )
 from homeassistant.components.dali.coordinator import DaliDeviceData
@@ -88,6 +89,45 @@ async def test_unaddressed_gear_issue_is_fixed(
     assert issue_registry.async_get_issue(DOMAIN, issue_id) is None
     assert 3 in entry.runtime_data.data
     assert hass.states.get("light.usb_dali2_3_gear") is not None
+
+
+async def test_unaddressed_device_issue_is_fixed(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    issue_registry: ir.IssueRegistry,
+    fake_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test the repair assigns a device address and exposes the new entity."""
+    assert await async_setup_component(hass, REPAIRS_DOMAIN, {})
+    fake_dali_driver.unaddressed_devices = [[(0, 1)]]
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, title="USB-DALI2"
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "homeassistant.components.dali.DriverLubaRs232",
+        return_value=fake_dali_driver,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    issue_id = unaddressed_control_device_issue_id(entry.entry_id)
+    issue = issue_registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.is_fixable
+
+    client = await hass_client()
+    result = await start_repair_fix_flow(client, DOMAIN, issue_id)
+    assert result["step_id"] == "confirm"
+    result = await process_repair_fix_flow(client, result["flow_id"])
+    assert result["type"] == FlowResultType.SHOW_PROGRESS
+    await hass.async_block_till_done()
+    result = await process_repair_fix_flow(client, result["flow_id"])
+
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert issue_registry.async_get_issue(DOMAIN, issue_id) is None
+    assert (0, 0, 1) in entry.runtime_data.device_instances
+    assert hass.states.get("event.usb_dali2_0_sensor_push_button_0") is not None
 
 
 @pytest.mark.parametrize(

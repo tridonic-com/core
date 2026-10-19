@@ -3,6 +3,13 @@
 from types import GeneratorType, SimpleNamespace
 from unittest.mock import patch
 
+from dali.address import DeviceShort
+from dali.device.general import (
+    DTR0 as DeviceDTR0,
+    EnableInstance,
+    EventScheme,
+    SetEventScheme,
+)
 from dali.exceptions import DALISequenceError, TransmissionError
 from dali.gear.general import QueryControlGearPresent
 import pytest
@@ -372,3 +379,137 @@ async def test_emergency_memory_failure_leaves_diagnostics_unset(
     assert gear.emergency.battery_charge == 254
     assert gear.emergency.control_gear_temperature is None
     assert gear.emergency.start_function_test_counter is None
+
+
+async def test_device_instance_metadata_and_event_listener(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test device metadata caching and event dispatch."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 3}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+    await coordinator._async_update_data()
+    # Identification data is read lazily after the fast initial refresh.
+    await coordinator.async_enrich_deferred_data()
+    received: list[object] = []
+    remove_listener = coordinator.async_add_event_listener(received.append)
+    coordinator.start_event_listener()
+
+    event = SimpleNamespace(short_address=DeviceShort(1), instance_number=2)
+    await fake_dali_driver.event_queue.put(object())
+    await fake_dali_driver.event_queue.put(event)
+    await hass.async_block_till_done()
+    remove_listener()
+    await fake_dali_driver.event_queue.put(event)
+    await hass.async_block_till_done()
+
+    try:
+        assert received == [event]
+        assert coordinator._device_metadata[1].gtin == 1234567654321
+    finally:
+        coordinator.close()
+        await hass.async_block_till_done()
+
+
+async def test_device_info_model_exposes_control_device_part(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a control device's model names its instance-type IEC parts."""
+    fake_dali_driver.dev_inst_map.mapping = {(5, 0): 1, (5, 1): 3}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+    coordinator.data = {}
+
+    device_info = coordinator.device_info("entry", "USB-DALI2", 5, input_device=True)
+
+    assert device_info["model"] == (
+        "DALI control device – Push button (IEC 62386-301), "
+        "Occupancy sensor (IEC 62386-303) (address 5)"
+    )
+
+
+async def test_control_instance_configured_for_device_instance_scheme(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a discovered control instance is switched to the Device/Instance scheme.
+
+    Instance-scheme events carry no short address, so the coordinator cannot
+    attribute an event to a device; every instance is reconfigured to the
+    Device/Instance scheme on discovery.
+    """
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 3}
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    await coordinator._async_update_data()
+
+    scheme_commands = [
+        command
+        for command in fake_dali_driver.sent
+        if isinstance(command, SetEventScheme)
+    ]
+    assert scheme_commands
+    assert any(isinstance(command, EnableInstance) for command in fake_dali_driver.sent)
+    scheme_index = fake_dali_driver.sent.index(scheme_commands[0])
+    preceding_dtr0 = next(
+        command
+        for command in reversed(fake_dali_driver.sent[:scheme_index])
+        if isinstance(command, DeviceDTR0)
+    )
+    assert preceding_dtr0.param == EventScheme.device_instance
+
+
+async def test_missing_device_short_address_query_failure(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a failed device missing-short-address query becomes an update failure."""
+    with (
+        patch.object(fake_dali_driver, "send", side_effect=OSError("offline")),
+        pytest.raises(UpdateFailed),
+    ):
+        await coordinator._has_unaddressed_control_devices()
+
+
+async def test_assign_device_short_addresses_discovers_new_device(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test device commissioning addresses a device and folds it into the map."""
+    fake_dali_driver.unaddressed_devices = [[(0, 3)]]
+    coordinator = DaliCoordinator(
+        hass, fake_dali_driver, MockConfigEntry(domain=DOMAIN)
+    )
+
+    remaining = await coordinator.async_assign_control_device_short_addresses()
+
+    assert remaining is False
+    assert (0, 0, 3) in coordinator.device_instances
+
+
+async def test_startup_scan_discovers_control_devices(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test control devices are enumerated on the first (startup) full scan."""
+    assert coordinator.device_instances == ()
+    fake_dali_driver.pending_device_instances = {(0, 0): 3}
+
+    await coordinator._async_update_data()
+
+    assert (0, 0, 3) in coordinator.device_instances
+
+
+async def test_periodic_scan_does_not_run_quiescent_discovery(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test later full scans skip autodiscover so the bus is not put quiescent."""
+    await coordinator._async_update_data()
+    # A device addressed after startup is not folded in by the periodic poll;
+    # only startup, the search button, or commissioning run autodiscover.
+    coordinator._last_full_scan = None
+    fake_dali_driver.pending_device_instances = {(7, 0): 3}
+
+    await coordinator._async_update_data()
+
+    assert (7, 0) not in fake_dali_driver.dev_inst_map.mapping

@@ -308,7 +308,16 @@ async def test_setup_entry_dali_sequence_failure(
     ("identifiers", "removable"),
     [
         pytest.param({(DOMAIN, "ENTRY_gear_0")}, False, id="active_gear"),
+        pytest.param(
+            {(DOMAIN, "ENTRY_controldevice_1")}, False, id="active_input_device"
+        ),
         pytest.param({(DOMAIN, "ENTRY_gear_5")}, True, id="stale_gear_address"),
+        pytest.param(
+            {(DOMAIN, "ENTRY_controldevice_5")}, True, id="stale_device_address"
+        ),
+        pytest.param(
+            {(DOMAIN, "ENTRY_controldevice_0")}, True, id="device_space_is_separate"
+        ),
         pytest.param({("other", "ENTRY_gear_0")}, True, id="foreign_identifier"),
     ],
 )
@@ -319,6 +328,7 @@ async def test_remove_config_entry_device(
     removable: bool,
 ) -> None:
     """Test devices can only be removed once their address stops responding."""
+    fake_dali_driver.dev_inst_map.mapping = {(1, 2): 3}
     entry = MockConfigEntry(
         domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"}, entry_id="ENTRY"
     )
