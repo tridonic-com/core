@@ -206,10 +206,10 @@ async def test_identification_number_splits_into_serial_and_batch(
 @pytest.mark.parametrize(
     ("gtin", "version", "expected"),
     [
-        (9006210123456, "18.5", "4.2-5"),
-        (9006210123456, "0.0", "0.0-0"),
-        (1234567654321, "18.5", "18.5"),
-        (None, "18.5", "18.5"),
+        (9006210123456, "102.18", "6.6-018"),
+        (9006210123456, "0.0", "0.0-000"),
+        (1234567654321, "102.18", "102.18"),
+        (None, "102.18", "102.18"),
     ],
     ids=["tridonic", "tridonic_zero", "other_manufacturer", "no_gtin"],
 )
@@ -222,8 +222,8 @@ async def test_tridonic_firmware_version_carries_a_build_number(
 ) -> None:
     """Test Tridonic gear reports its version as major.minor-build.
 
-    Their first version byte packs major and minor the way IEC 62386-102 packs
-    a single-byte version, leaving the second byte to be the build number.
+    Their first version byte splits into a major and a minor version nibble,
+    leaving the second byte to be the build number.
     """
     fake_dali_driver.metadata[info.GTIN] = gtin
     fake_dali_driver.metadata[info.FirmwareVersion] = version

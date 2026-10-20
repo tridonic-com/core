@@ -2048,9 +2048,9 @@ def _firmware_version(version: object, gtin: object) -> str | None:
     """Return the firmware version, in Tridonic's format on Tridonic units.
 
     The library renders the two version bytes as "<first>.<second>", but on
-    Tridonic gear the first byte packs the major and minor version the way IEC
-    62386-102 packs a single-byte version, and the second byte is the build
-    number, giving "<major>.<minor>-<build>".
+    Tridonic gear the first byte holds the major version in its high nibble and
+    the minor version in its low nibble, and the second byte is a three-digit
+    build number, giving "<major>.<minor>-<build>".
     """
     if not isinstance(version, str):
         return None
@@ -2060,7 +2060,7 @@ def _firmware_version(version: object, gtin: object) -> str | None:
     if not first.isdigit() or not second.isdigit():
         return version
     packed = int(first)
-    return f"{packed >> 2}.{packed & 0x03}-{second}"
+    return f"{packed >> 4}.{packed & 0x0F}-{int(second):03d}"
 
 
 def _level_or_mask(response: object) -> int | None:
