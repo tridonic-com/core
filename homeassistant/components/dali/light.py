@@ -22,7 +22,12 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DaliConfigEntry
-from .const import DEVICE_TYPE_COLOUR, DEVICE_TYPE_LED, DOMAIN
+from .const import (
+    DEVICE_TYPE_EMERGENCY,
+    DEVICE_TYPE_SWITCHING,
+    DIMMABLE_GEAR_DEVICE_TYPES,
+    DOMAIN,
+)
 from .coordinator import (
     DaliCoordinator,
     DaliGearData,
@@ -58,13 +63,24 @@ async def async_setup_entry(
 def _is_light(gear: DaliGearData) -> bool:
     """Return whether a gear should be exposed as a light.
 
-    Dimmable (DT6) and colour (DT8) gear are always lights. A pure emergency
-    (DT1) gear is only a light when it is a maintained type that can be driven
-    from the mains; a non-maintained emergency gear has no normal-mode output.
+    Control gear drives a light unless it is purely an emergency (DT1) one,
+    which is only a light when it is a maintained type that can be driven from
+    the mains; a non-maintained emergency gear has no normal-mode output.
     """
-    if DEVICE_TYPE_LED in gear.device_types or DEVICE_TYPE_COLOUR in gear.device_types:
-        return True
-    return gear.emergency is not None and gear.emergency.controllable
+    if gear.device_types == (DEVICE_TYPE_EMERGENCY,):
+        return gear.emergency is not None and gear.emergency.controllable
+    return True
+
+
+def _is_on_off(gear: DaliGearData) -> bool:
+    """Return whether a gear switches its output rather than dimming it.
+
+    Switching function (DT7) gear has a binary output, unless it implements a
+    dimming device type as well.
+    """
+    return DEVICE_TYPE_SWITCHING in gear.device_types and not any(
+        device_type in DIMMABLE_GEAR_DEVICE_TYPES for device_type in gear.device_types
+    )
 
 
 class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
@@ -84,6 +100,9 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
         self._attr_unique_id = f"{entry_id}_{address}"
         self._attr_device_info = coordinator.device_info(entry_id, title, address)
         gear_data = coordinator.data[address]
+        if _is_on_off(gear_data):
+            self._attr_supported_color_modes = {ColorMode.ONOFF}
+            return
         color_modes = {ColorMode.BRIGHTNESS}
         if gear_data.supports_color_temperature:
             color_modes.add(ColorMode.COLOR_TEMP)
@@ -113,8 +132,10 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
 
     @property
     @override
-    def brightness(self) -> int:
+    def brightness(self) -> int | None:
         """Return the current DALI arc power level."""
+        if ColorMode.ONOFF in self._attr_supported_color_modes:
+            return None
         return self.coordinator.data[self._address].level or 0
 
     @property
@@ -122,6 +143,8 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
     def color_mode(self) -> ColorMode:
         """Return the currently reported color mode."""
         modes = self._attr_supported_color_modes
+        if ColorMode.ONOFF in modes:
+            return ColorMode.ONOFF
         if ColorMode.XY in modes and ColorMode.COLOR_TEMP in modes:
             gear_data = self.coordinator.data[self._address]
             if gear_data.color_type_tc_active is False:

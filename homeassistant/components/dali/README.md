@@ -20,7 +20,9 @@ The integration reads optional identification data from DALI memory bank 0 when 
 
 ## Control
 
-Lights support on, off, and brightness control. The integration currently exposes DALI control gear as brightness-only lights.
+Lights support on, off, and brightness control, with colour temperature and CIE xy colour on colour control (DT8) gear.
+
+Control gear is added from its presence on the bus rather than from the IEC 62386 part 2xx device type it reports, so fluorescent (DT0), HID (DT2), halogen (DT3), incandescent (DT4), DC-controlled (DT5), LED (DT6) and colour (DT8) gear are all exposed, as is gear reporting no device type at all. Switching function (DT7) gear is exposed as an on/off light. A self-contained emergency (DT1) gear only becomes a light when it is a maintained type, since a non-maintained one has no normal-mode output.
 
 ## Removal
 

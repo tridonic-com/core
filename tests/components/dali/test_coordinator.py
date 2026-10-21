@@ -233,6 +233,29 @@ async def test_tridonic_firmware_version_carries_a_build_number(
     assert gear.firmware_version == expected
 
 
+@pytest.mark.parametrize(
+    "device_types",
+    [(0,), (7,), (2,), ()],
+    ids=["dt0", "dt7", "dt2", "no_device_type"],
+)
+async def test_gear_without_a_known_extension_is_discovered(
+    coordinator: DaliCoordinator,
+    fake_dali_driver: FakeDaliDriver,
+    device_types: tuple[int, ...],
+) -> None:
+    """Test gear is discovered from its presence, not its part 2xx extensions.
+
+    Gear answering 254 reports no device type at all, which the fake models as
+    an empty tuple; it still dims over IEC 62386-102 like any other gear.
+    """
+    fake_dali_driver.gears = {0: device_types}
+
+    data = await coordinator._async_update_data()
+
+    assert data[0].device_types == device_types
+    assert data[0].level is not None
+
+
 async def test_initial_refresh_defers_slow_memory_reads(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:

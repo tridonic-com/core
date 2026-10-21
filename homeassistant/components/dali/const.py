@@ -4,23 +4,29 @@ DOMAIN = "dali"
 
 CONF_BUS_POWER = "bus_power"
 
-# IEC 62386 control-gear device types the integration handles.
-DEVICE_TYPE_EMERGENCY = 1
-DEVICE_TYPE_LED = 6
-DEVICE_TYPE_COLOUR = 8
-SUPPORTED_GEAR_DEVICE_TYPES = (
-    DEVICE_TYPE_LED,
-    DEVICE_TYPE_COLOUR,
-    DEVICE_TYPE_EMERGENCY,
-)
-
-# IEC 62386 control-gear device types not yet supported by the integration.
+# IEC 62386 control-gear device types.
 DEVICE_TYPE_FLUORESCENT = 0
+DEVICE_TYPE_EMERGENCY = 1
 DEVICE_TYPE_HID = 2
 DEVICE_TYPE_HALOGEN = 3
 DEVICE_TYPE_INCANDESCENT = 4
 DEVICE_TYPE_DC = 5
+DEVICE_TYPE_LED = 6
 DEVICE_TYPE_SWITCHING = 7
+DEVICE_TYPE_COLOUR = 8
+
+# Device types whose output is dimmed with the IEC 62386-102 arc power level.
+# Gear reporting no device type at all is dimmable too: the part 102 arc power
+# interface is mandatory, and a part 2xx extension is not.
+DIMMABLE_GEAR_DEVICE_TYPES = (
+    DEVICE_TYPE_FLUORESCENT,
+    DEVICE_TYPE_HID,
+    DEVICE_TYPE_HALOGEN,
+    DEVICE_TYPE_INCANDESCENT,
+    DEVICE_TYPE_DC,
+    DEVICE_TYPE_LED,
+    DEVICE_TYPE_COLOUR,
+)
 
 # IEC 62386 control-device instance types.
 INSTANCE_TYPE_PUSH_BUTTON = 1

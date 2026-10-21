@@ -93,10 +93,61 @@ async def test_light_properties(
 
 
 @pytest.mark.parametrize(
+    ("device_types", "expected_mode"),
+    [
+        ((7,), ColorMode.ONOFF),
+        ((7, 6), ColorMode.BRIGHTNESS),
+        ((0,), ColorMode.BRIGHTNESS),
+        ((), ColorMode.BRIGHTNESS),
+    ],
+    ids=["dt7", "dt7_dimmable", "dt0", "no_device_type"],
+)
+async def test_light_color_mode_follows_device_type(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    device_types: tuple[int, ...],
+    expected_mode: ColorMode,
+) -> None:
+    """Test switching function gear is on/off and everything else dims."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {
+        0: DaliGearData(level=128, min_level=1, device_types=device_types)
+    }
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 0)
+
+    assert light.supported_color_modes == {expected_mode}
+    assert light.color_mode is expected_mode
+    assert light.is_on
+
+
+async def test_switching_gear_reports_no_brightness(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test DT7 gear drives its output fully on without a brightness value."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
+    coordinator = DaliCoordinator(hass, fake_dali_driver, entry)
+    coordinator.data = {0: DaliGearData(level=0, min_level=1, device_types=(7,))}
+    light = DaliLight(coordinator, entry.entry_id, entry.title, 0)
+
+    assert light.brightness is None
+    assert not light.is_on
+
+    with patch.object(coordinator, "async_update_gear", new_callable=AsyncMock):
+        await light.async_turn_on()
+    assert isinstance(fake_dali_driver.sent[-1], DAPC)
+    assert fake_dali_driver.sent[-1].power == 254
+
+
+@pytest.mark.parametrize(
     ("gear", "expected"),
     [
         (DaliGearData(device_types=(6,)), True),
         (DaliGearData(device_types=(8,)), True),
+        (DaliGearData(device_types=(0,)), True),
+        (DaliGearData(device_types=(7,)), True),
+        (DaliGearData(device_types=()), True),
+        (DaliGearData(device_types=(1, 6)), True),
         (
             DaliGearData(
                 device_types=(1,),
@@ -117,12 +168,22 @@ async def test_light_properties(
         ),
         (DaliGearData(device_types=(1,), emergency=None), False),
     ],
-    ids=["dt6", "dt8", "dt1_maintained", "dt1_non_maintained", "dt1_no_data"],
+    ids=[
+        "dt6",
+        "dt8",
+        "dt0",
+        "dt7",
+        "no_device_type",
+        "dt1_with_dimming",
+        "dt1_maintained",
+        "dt1_non_maintained",
+        "dt1_no_data",
+    ],
 )
 def test_is_light_filters_non_maintained_emergency(
     gear: DaliGearData, expected: bool
 ) -> None:
-    """Test only dimmable, colour, or maintained emergency gear become lights."""
+    """Test every gear but a non-maintained emergency one becomes a light."""
     assert _is_light(gear) is expected
 
 

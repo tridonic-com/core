@@ -98,7 +98,6 @@ from .const import (
     ISSUE_BUS_VOLTAGE_ERROR,
     ISSUE_UNADDRESSED_CONTROLDEVICE,
     ISSUE_UNADDRESSED_GEAR,
-    SUPPORTED_GEAR_DEVICE_TYPES,
     address_collision_issue_id,
     bus_overload_issue_id,
     bus_voltage_error_issue_id,
@@ -682,15 +681,11 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             # unavailable and leave the collision to the dedicated repair.
             if present.raw_value is not None and present.raw_value.error:
                 return None
-            device_types = tuple(
-                device_type
-                for device_type in await self.driver.send(
-                    QueryDeviceTypes(gear_address)
-                )
-                if device_type in SUPPORTED_GEAR_DEVICE_TYPES
-            )
-            if not device_types:
-                return None
+            # Gear that answered QueryControlGearPresent exists regardless of
+            # what it reports here: the part 2xx device types only say which
+            # extensions it implements, and gear implementing none at all
+            # (answering 254, so an empty tuple) still dims over part 102.
+            device_types = tuple(await self.driver.send(QueryDeviceTypes(gear_address)))
             level = await self.driver.send(QueryActualLevel(gear_address))
             config = self._gear_config.get(address)
             if config is None or refresh_config:
