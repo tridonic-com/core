@@ -681,11 +681,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             # unavailable and leave the collision to the dedicated repair.
             if present.raw_value is not None and present.raw_value.error:
                 return None
-            # Gear that answered QueryControlGearPresent exists regardless of
-            # what it reports here: the part 2xx device types only say which
-            # extensions it implements, and gear implementing none at all
-            # (answering 254, so an empty tuple) still dims over part 102.
-            device_types = tuple(await self.driver.send(QueryDeviceTypes(gear_address)))
+            device_types = await self._query_device_types(gear_address)
             level = await self.driver.send(QueryActualLevel(gear_address))
             config = self._gear_config.get(address)
             if config is None or refresh_config:
@@ -817,6 +813,20 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             hardware_version=metadata.hardware_version,
             last_memory_bank=metadata.last_memory_bank,
         )
+
+    async def _query_device_types(self, gear_address: GearShort) -> tuple[int, ...]:
+        """Return the IEC 62386 part 2xx device types a control gear implements.
+
+        Gear built to the 2009 edition answers MASK when it implements several
+        of them, but has no QueryNextDeviceType to enumerate them with, which
+        the library reports as a sequence error. Its extensions are then simply
+        unknown, which is not the same as the gear being absent: it still dims
+        over part 102.
+        """
+        try:
+            return tuple(await self.driver.send(QueryDeviceTypes(gear_address)))
+        except DALISequenceError:
+            return ()
 
     async def _query_gear_config(self, gear_address: GearShort) -> DaliGearConfig:
         """Read the IEC 62386-102 configuration variables of one control gear."""

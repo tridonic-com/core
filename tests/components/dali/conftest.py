@@ -22,7 +22,7 @@ from dali.device.general_sensor import (
     QueryMeasurementVariable,
     UnitOfMeasurement,
 )
-from dali.exceptions import MemoryLocationNotImplemented
+from dali.exceptions import DALISequenceError, MemoryLocationNotImplemented
 from dali.frame import BackwardFrame
 from dali.gear.colour import (
     QueryColourStatus,
@@ -109,6 +109,9 @@ class FakeDaliDriver:
         self.closed = False
         self.sent: list[Command] = []
         self.gears = {0: (6,), 1: (1,), 2: (8,)}
+        # Gear whose device types cannot be enumerated, as 2009 edition gear
+        # answering MASK cannot; python-dali raises a sequence error for those.
+        self.undecodable_device_types: set[int] = set()
         self.levels = {0: 128, 1: 254, 2: 254}
         self.min_levels = {0: 86, 2: 1}
         self.max_levels: dict[int, int] = {}
@@ -462,7 +465,10 @@ class FakeDaliDriver:
             return None
         first_command = next(sequence)
         if isinstance(first_command, QueryDeviceType):
-            return list(self.gears.get(first_command.destination.address, ()))
+            address = first_command.destination.address
+            if address in self.undecodable_device_types:
+                raise DALISequenceError("No response to QueryNextDeviceType()")
+            return list(self.gears.get(address, ()))
         if isinstance(first_command, QueryActualLevel):
             dtr_command = next(sequence)
             assert isinstance(dtr_command, DTR0)

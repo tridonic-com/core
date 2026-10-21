@@ -256,6 +256,23 @@ async def test_gear_without_a_known_extension_is_discovered(
     assert data[0].level is not None
 
 
+async def test_gear_with_undecodable_device_types_is_discovered(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test gear stays discovered when its device types cannot be enumerated.
+
+    IEC 62386-102:2009 gear implementing several extensions answers MASK and
+    has no QueryNextDeviceType to list them with, so the extensions remain
+    unknown; the gear still dims over part 102 and must not disappear.
+    """
+    fake_dali_driver.undecodable_device_types = {0}
+
+    data = await coordinator._async_update_data()
+
+    assert data[0].device_types == ()
+    assert data[0].level is not None
+
+
 async def test_initial_refresh_defers_slow_memory_reads(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:

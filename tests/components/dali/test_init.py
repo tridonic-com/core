@@ -275,7 +275,12 @@ async def test_lost_interface_retries_while_it_stays_away(
 async def test_setup_entry_dali_sequence_failure(
     hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test setup ignores a gear when its device-type query fails."""
+    """Test setup keeps a gear when its device-type query fails.
+
+    The device types only name the IEC 62386 part 2xx extensions a gear
+    implements, so failing to read them leaves a gear that still dims over
+    part 102 rather than one that is absent.
+    """
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_DEVICE: "/dev/ttyACM0"})
     entry.add_to_hass(hass)
     original_send = fake_dali_driver.send
@@ -300,7 +305,8 @@ async def test_setup_entry_dali_sequence_failure(
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
 
-    assert entry.runtime_data.data == {}
+    assert set(entry.runtime_data.data) == set(fake_dali_driver.gears)
+    assert all(gear.device_types == () for gear in entry.runtime_data.data.values())
     assert await hass.config_entries.async_unload(entry.entry_id)
 
 
