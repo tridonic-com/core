@@ -5,9 +5,11 @@ from unittest.mock import patch
 
 from dali.memory import info
 from dali.memory.location import FlagValue, MemoryValue
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 
 from homeassistant.components.dali.const import DOMAIN
+from homeassistant.components.dali.coordinator import SCAN_INTERVAL
 from homeassistant.components.dali.lifetime import (
     OPERATING_TIME_FIRST_ADDRESS,
     OPERATING_TIME_VALUES,
@@ -23,7 +25,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .conftest import FakeDaliDriver
 
-from tests.common import MockConfigEntry
+from tests.common import MockConfigEntry, async_fire_time_changed
 
 # A GTIN carrying Tridonic's GS1 company prefix, which is what gates the
 # manufacturer-specific bank 4 read.
@@ -229,6 +231,31 @@ async def test_operating_time_counters_are_disabled_until_enabled(
     assert state is not None
     assert state.state == "9320"
     assert state.attributes["unit_of_measurement"] == "h"
+
+
+async def test_lifetime_sensors_survive_a_poll_between_diagnostics_scans(
+    hass: HomeAssistant,
+    entity_registry: er.EntityRegistry,
+    freezer: FrozenDateTimeFactory,
+    tridonic_dali_driver: FakeDaliDriver,
+) -> None:
+    """Test the Lifetime Indicator values outlast a plain bus poll.
+
+    Bank 4 is only re-read every ``DIAGNOSTICS_SCAN_INTERVAL``, so the far more
+    frequent poll has to carry the cached readings over rather than rebuild the
+    gear without them and flip the sensors to unavailable in between.
+    """
+    entry = await _setup(hass, tridonic_dali_driver)
+
+    entity_id = _entity_id(entity_registry, entry, "driver_health")
+    assert entity_id is not None
+    assert hass.states.get(entity_id).state == "99.0"
+
+    freezer.tick(SCAN_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(entity_id).state == "99.0"
 
 
 @pytest.mark.parametrize(

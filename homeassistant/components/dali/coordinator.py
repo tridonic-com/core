@@ -804,6 +804,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             luminaire=self._luminaire.get(address),
             maintenance=self._maintenance.get(address),
             diagnostics=self._diagnostics.get(address),
+            lifetime=self._lifetime.get(address),
             active_energy=self._energy.get(address),
             gtin=metadata.gtin,
             identification_number=metadata.identification_number,
