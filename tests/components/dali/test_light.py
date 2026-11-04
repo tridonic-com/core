@@ -363,11 +363,11 @@ def test_brightness_level_round_trip_is_stable(
     for brightness in range(1, 256):
         level = _brightness_to_dali_level(brightness, linear_dimming, min_level)
         assert min_level <= level <= 254
-        read_back = _dali_level_to_brightness(level, linear_dimming, min_level)
+        read_back = _dali_level_to_brightness(level, linear_dimming)
         assert _brightness_to_dali_level(read_back, linear_dimming, min_level) == level
 
 
-@pytest.mark.parametrize("min_level", [1, 86, 128])
+@pytest.mark.parametrize("min_level", [1, 86, 96, 128, 200])
 @pytest.mark.parametrize("linear_dimming", [False, True])
 def test_brightness_to_level_snaps_to_closest_readback(
     min_level: int, linear_dimming: bool
@@ -376,11 +376,11 @@ def test_brightness_to_level_snaps_to_closest_readback(
     for brightness in range(1, 256):
         level = _brightness_to_dali_level(brightness, linear_dimming, min_level)
         chosen_error = abs(
-            _dali_level_to_brightness(level, linear_dimming, min_level) - brightness
+            _dali_level_to_brightness(level, linear_dimming) - brightness
         )
         for other in range(max(min_level, level - 5), min(254, level + 5) + 1):
             other_error = abs(
-                _dali_level_to_brightness(other, linear_dimming, min_level) - brightness
+                _dali_level_to_brightness(other, linear_dimming) - brightness
             )
             assert chosen_error <= other_error
 
