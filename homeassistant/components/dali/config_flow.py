@@ -57,12 +57,16 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         driver = DriverLubaRs232(uri=luba232_uri(device))
         try:
-            await driver.connect()
+            # Probe read-only: do not write the interface's settings, so a bus
+            # already powered by the integrated supply is not depowered.
+            await driver.connect(apply_settings=False)
             descriptor = await driver.query_device_descriptor()
         finally:
             if transport := getattr(driver, "_transport", None):
                 transport.close()
-        return bool(descriptor and descriptor.has_bus_power_supply)
+        if descriptor is None:
+            raise OSError("Unable to read the DALI interface descriptor")
+        return bool(descriptor.has_bus_power_supply)
 
     @override
     async def async_step_user(
@@ -155,7 +159,7 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="bus_power",
             data_schema=probatio.Schema(
-                {probatio.Required(CONF_BUS_POWER, default=True): bool}
+                {probatio.Required(CONF_BUS_POWER, default=False): bool}
             ),
         )
 
@@ -163,6 +167,10 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         """Create the config entry for the selected interface."""
         assert self._device is not None
         assert self._title is not None
+        # Another manual flow may have configured the same port while this one
+        # waited at the bus-power step; manual ports have no unique ID for the
+        # flow manager to deduplicate, so re-check before creating the entry.
+        self._async_abort_entries_match({CONF_DEVICE: self._device})
         return self.async_create_entry(
             title=self._title,
             data={CONF_DEVICE: self._device, CONF_BUS_POWER: bus_power},
