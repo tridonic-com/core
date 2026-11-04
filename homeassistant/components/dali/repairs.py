@@ -9,13 +9,13 @@ from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 
-from . import DaliConfigEntry
 from .const import (
     CONF_BUS_POWER,
     ISSUE_ADDRESS_COLLISION,
     ISSUE_BUS_VOLTAGE_ERROR,
     ISSUE_UNADDRESSED_CONTROLDEVICE,
 )
+from .coordinator import DaliConfigEntry
 
 
 class AssignShortAddressesRepairFlow(RepairsFlow):

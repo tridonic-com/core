@@ -7,7 +7,7 @@ from dali.command import BitmapResponse
 
 from homeassistant.core import HomeAssistant
 
-from . import DaliConfigEntry
+from .coordinator import DaliConfigEntry
 
 
 def _serialize(value: Any) -> Any:

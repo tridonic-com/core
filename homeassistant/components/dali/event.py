@@ -19,8 +19,7 @@ from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import DaliConfigEntry
-from .coordinator import DaliCoordinator
+from .coordinator import DaliConfigEntry, DaliCoordinator
 
 PARALLEL_UPDATES = 0
 

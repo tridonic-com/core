@@ -3,7 +3,6 @@
 from dali.driver.serial import DriverLubaRs232
 from dali.exceptions import TransmissionError
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DEVICE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -16,10 +15,12 @@ from .const import (
     CONTROL_DEVICE_ID_INFIX,
     DOMAIN,
     GEAR_ID_INFIX,
+    luba232_uri,
     unaddressed_gear_issue_id,
 )
 from .coordinator import (
     STORAGE_VERSION,
+    DaliConfigEntry,
     DaliCoordinator,
     clear_bus_voltage_issues,
     raise_bus_voltage_issue,
@@ -36,13 +37,10 @@ PLATFORMS: list[Platform] = [
 ]
 
 
-type DaliConfigEntry = ConfigEntry[DaliCoordinator]
-
-
-async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
     """Set up Tridonic DALI from a config entry."""
     driver = DriverLubaRs232(
-        uri=f"luba232:{entry.data[CONF_DEVICE]}",
+        uri=luba232_uri(entry.data[CONF_DEVICE]),
         bus_power=entry.data.get(CONF_BUS_POWER, False),
     )
     try:
@@ -81,15 +79,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool
         hass, coordinator.async_enrich_deferred_data(), "dali_metadata_enrich"
     )
 
-    return True
 
-
-async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
     """Unload a config entry."""
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        entry.runtime_data.close()
-    return unloaded
+    await hass.config_entries.async_unload_platforms_or_raise(entry, PLATFORMS)
+    entry.runtime_data.close()
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:

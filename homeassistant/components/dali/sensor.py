@@ -35,9 +35,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import DaliConfigEntry
 from .const import DEVICE_TYPE_EMERGENCY
 from .coordinator import (
+    DaliConfigEntry,
     DaliCoordinator,
     DaliDeviceData,
     DaliDiagnosticsData,

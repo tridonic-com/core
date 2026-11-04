@@ -27,6 +27,7 @@ from dali.memory import (
 from dali.memory.location import FlagValue
 from dali.sequences import progress
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.dali.const import (
     CONF_BUS_POWER,
@@ -39,6 +40,7 @@ from homeassistant.components.dali.coordinator import (
     DIAGNOSTICS_SCAN_INTERVAL,
     DaliCoordinator,
     DaliGearData,
+    _brightness_to_dali_level,
     _dali_level_to_brightness,
     _log_commissioning_progress,
 )
@@ -48,8 +50,6 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .conftest import FakeDaliDriver, _FakeGear
-
-from tests.common import MockConfigEntry
 
 
 @pytest.fixture
@@ -63,13 +63,33 @@ def coordinator(
 
 @pytest.mark.parametrize(
     ("level", "linear", "expected"),
-    [(255, False, None), (0, False, 0), (86, False, 1), (170, True, 128)],
+    [
+        (255, False, None),
+        (0, False, 0),
+        (86, False, 3),
+        (170, True, 171),
+        (200, False, 58),
+        (200, True, 201),
+        (254, False, 255),
+        (254, True, 255),
+    ],
 )
 def test_dali_level_to_brightness(
     level: object, linear: bool, expected: int | None
 ) -> None:
     """Test DALI readback conversion branches."""
-    assert _dali_level_to_brightness(level, linear, 86) == expected
+    assert _dali_level_to_brightness(level, linear) == expected
+
+
+def test_linear_readback_is_independent_of_minimum() -> None:
+    """Test the linear readback is a fixed curve; the minimum only clamps commands.
+
+    Level 200 reads back the same brightness whatever the configured minimum,
+    and a request below the minimum is clamped to it rather than rescaled.
+    """
+    assert _dali_level_to_brightness(200, True) == 201
+    # Mid brightness maps near mid level, far below a raised minimum.
+    assert _brightness_to_dali_level(128, True, 1) < 200
 
 
 async def test_invalid_min_level_uses_default(
@@ -381,7 +401,7 @@ async def test_enrich_deferred_data_survives_transport_error(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
     """Test a transport error during deferred enrichment is swallowed."""
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
 
     with patch.object(fake_dali_driver, "send", side_effect=OSError("offline")):
         await coordinator.async_enrich_deferred_data()
@@ -423,26 +443,41 @@ async def test_configured_tc_limits_take_precedence(
 async def test_unanswered_capability_queries_use_defaults(
     coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
 ) -> None:
-    """Test a gear that ignores capability queries falls back to defaults."""
+    """Test a gear that ignores a capability query falls back to defaults."""
+    fake_dali_driver.color_features = {2: None}
+    gear_dt8 = await coordinator._query_gear(2)
+
+    assert gear_dt8 is not None
+    assert gear_dt8.supports_color_temperature is False
+    assert gear_dt8.supports_xy is False
+
+
+async def test_missing_dimming_curve_is_retried(
+    coordinator: DaliCoordinator, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a dropped dimming-curve reply re-reads instead of flipping the curve."""
+    # Seed the linear gear 0 as known so a miss triggers the retry.
+    coordinator.data = {0: await coordinator._query_gear_once(0)}
+
+    curve_reads = 0
     original_send = fake_dali_driver.send
 
     async def send(
         msg: object, *, priority: int = 5, progress: object = None
     ) -> object:
+        nonlocal curve_reads
         if isinstance(msg, QueryDimmingCurve):
-            return None
+            curve_reads += 1
+            if curve_reads == 1:
+                return SimpleNamespace(raw_value=None)
         return await original_send(msg, priority=priority, progress=progress)
 
-    fake_dali_driver.color_features = {2: None}
     with patch.object(fake_dali_driver, "send", side_effect=send):
-        gear_dt6 = await coordinator._query_gear(0)
-        gear_dt8 = await coordinator._query_gear(2)
+        gear = await coordinator._query_gear(0)
 
-    assert gear_dt6 is not None
-    assert gear_dt6.linear_dimming is False
-    assert gear_dt8 is not None
-    assert gear_dt8.supports_color_temperature is False
-    assert gear_dt8.supports_xy is False
+    assert curve_reads == 2
+    assert gear is not None
+    assert gear.linear_dimming is True
 
 
 async def test_emergency_information_is_decoded(
@@ -1142,7 +1177,7 @@ async def _refresh_through_enrichment(coordinator: DaliCoordinator) -> None:
     The first pass is the fast one that skips every slow memory bank read;
     enrichment then reads the static banks and refreshes again behind them.
     """
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
     await coordinator.async_enrich_deferred_data()
 
 
@@ -1251,17 +1286,17 @@ async def test_volatile_banks_are_read_on_their_own_interval(
     """Test the Part 252 and 253 banks are not re-read on every poll."""
     reads = _count_bank_reads(fake_dali_driver, 205)
 
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
     assert reads() == 0
 
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
     assert reads() == 1
 
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
     assert reads() == 1
 
     coordinator._last_diagnostics_scan -= DIAGNOSTICS_SCAN_INTERVAL.total_seconds()
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
     assert reads() == 2
 
 
@@ -1288,7 +1323,7 @@ async def test_diagnostics_caches_are_pruned_on_full_scan(
 
     del fake_dali_driver.gears[0]
     coordinator._last_full_scan = None
-    await coordinator.async_refresh()
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
 
     assert 0 not in coordinator._diagnostics
     assert 0 not in coordinator._energy

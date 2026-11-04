@@ -26,9 +26,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import DaliConfigEntry
 from .const import DOMAIN
-from .coordinator import DaliCoordinator, DaliGearData
+from .coordinator import DaliConfigEntry, DaliCoordinator, DaliGearData
 from .helpers import (
     EXTENDED_FADE_TIME_STEP,
     MASK_LEVEL,

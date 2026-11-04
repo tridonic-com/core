@@ -242,9 +242,6 @@
       "aging_rate_last_year": {
         "name": "Aging rate last year"
       },
-      "air_quality_index": {
-        "name": "[%key:component::sensor::entity_component::aqi::name%]"
-      },
       "average_power_during_charging": {
         "name": "Average power during charging"
       },
@@ -262,9 +259,6 @@
       },
       "cct": {
         "name": "Correlated color temperature"
-      },
-      "co2": {
-        "name": "[%key:component::sensor::entity_component::carbon_dioxide::name%]"
       },
       "control_gear_external_supply_voltage": {
         "name": "Control gear supply voltage"
@@ -425,9 +419,6 @@
       "part306_sensor": {
         "name": "Measurement"
       },
-      "pressure": {
-        "name": "[%key:component::sensor::entity_component::atmospheric_pressure::name%]"
-      },
       "rated_duration": {
         "name": "Rated duration"
       },
@@ -437,23 +428,14 @@
       "rated_median_useful_light_source_starts": {
         "name": "Rated median useful light source starts"
       },
-      "relative_humidity": {
-        "name": "[%key:component::sensor::entity_component::humidity::name%]"
-      },
       "rest_mode_counter": {
         "name": "Rest mode counter"
-      },
-      "sound_pressure": {
-        "name": "[%key:component::sensor::entity_component::sound_pressure::name%]"
       },
       "start_duration_test_counter_total": {
         "name": "Duration test start counter"
       },
       "start_function_test_counter": {
         "name": "Function test start counter"
-      },
-      "temperature": {
-        "name": "[%key:component::sensor::entity_component::temperature::name%]"
       },
       "voc": {
         "name": "Volatile organic compounds"

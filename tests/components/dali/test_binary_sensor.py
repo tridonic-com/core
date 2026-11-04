@@ -8,6 +8,7 @@ from dali.gear.sequences import (
     QueryEmergencyStatusResponse,
 )
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.components.dali.binary_sensor import (
@@ -26,8 +27,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .conftest import FakeDaliDriver, decode_status
-
-from tests.common import MockConfigEntry
 
 
 def _binary_sensor(

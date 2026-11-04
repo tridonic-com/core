@@ -7,6 +7,12 @@ from unittest.mock import patch
 from dali.exceptions import ProgramShortAddressFailure
 from dali.memory import info
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.repairs import (
+    process_repair_fix_flow,
+    start_repair_fix_flow,
+)
+from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.components.dali.const import (
     CONF_BUS_POWER,
@@ -25,10 +31,6 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 
 from .conftest import FakeDaliDriver, _FakeGear
-
-from tests.common import MockConfigEntry
-from tests.components.repairs import process_repair_fix_flow, start_repair_fix_flow
-from tests.typing import ClientSessionGenerator
 
 
 @pytest.fixture

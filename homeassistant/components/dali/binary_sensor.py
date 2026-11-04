@@ -16,9 +16,13 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import DaliConfigEntry
 from .const import DEVICE_TYPE_EMERGENCY
-from .coordinator import DaliCoordinator, DaliDiagnosticsData, DaliEmergencyData
+from .coordinator import (
+    DaliConfigEntry,
+    DaliCoordinator,
+    DaliDiagnosticsData,
+    DaliEmergencyData,
+)
 
 PARALLEL_UPDATES = 0
 

@@ -28,7 +28,7 @@ BANK_4 = MemoryBank(4, 0x67, has_lock=True)
 UNIT_PERCENT_PER_YEAR = "%/year"
 
 
-class DriverHealth(FixedScaleNumericValue):
+class DriverHealth(FixedScaleNumericValue):  # type: ignore[misc]
     """Remaining health of the driver, as a percentage.
 
     Starts at 100% and falls to 0% as the capacitors reach the end of their
@@ -43,7 +43,7 @@ class DriverHealth(FixedScaleNumericValue):
     locations = MemoryLocation(address=0x42, default=0xC8, type_=MemoryType.ROM)
 
 
-class CurrentAgingRate(FixedScaleNumericValue):
+class CurrentAgingRate(FixedScaleNumericValue):  # type: ignore[misc]
     """How fast the capacitors are ageing right now, in percent per year.
 
     The reciprocal of the capacitor lifetime at the present temperature, so a
@@ -58,7 +58,7 @@ class CurrentAgingRate(FixedScaleNumericValue):
     locations = MemoryLocation(address=0x43, default=0x00, type_=MemoryType.ROM)
 
 
-class AgingRateLastMonth(FixedScaleNumericValue):
+class AgingRateLastMonth(FixedScaleNumericValue):  # type: ignore[misc]
     """Ageing rate averaged over the last month (744 h), in percent per year.
 
     A driver reports nothing for its first month of operation, before the
@@ -72,7 +72,7 @@ class AgingRateLastMonth(FixedScaleNumericValue):
     locations = MemoryLocation(address=0x44, default=0x00, type_=MemoryType.ROM)
 
 
-class AgingRateLastYear(FixedScaleNumericValue):
+class AgingRateLastYear(FixedScaleNumericValue):  # type: ignore[misc]
     """Ageing rate averaged over the last year (8760 h), in percent per year.
 
     Reported from the first month of operation onwards, as with the monthly

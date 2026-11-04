@@ -8,6 +8,7 @@ from dali.device.light import LightEvent
 from dali.device.occupancy import OccupancyEvent
 from dali.device.pushbutton import ButtonPressed
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.dali.binary_sensor import DaliOccupancy
 from homeassistant.components.dali.const import DOMAIN
@@ -23,8 +24,6 @@ from homeassistant.const import CONF_DEVICE, UnitOfSoundPressure, UnitOfTemperat
 from homeassistant.core import HomeAssistant
 
 from .conftest import FakeDaliDriver
-
-from tests.common import MockConfigEntry
 
 
 def _coordinator(hass: HomeAssistant, driver: FakeDaliDriver) -> DaliCoordinator:

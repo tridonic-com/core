@@ -3,7 +3,9 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from homeassistant.components.dali.const import CONF_BUS_POWER, DOMAIN
+from pytest_homeassistant.common import MockConfigEntry
+
+from homeassistant.components.dali.const import CONF_BUS_POWER, DOMAIN, luba232_uri
 from homeassistant.components.usb import (
     SerialDevice,
     USBDevice,
@@ -14,9 +16,8 @@ from homeassistant.config_entries import SOURCE_USB, SOURCE_USER
 from homeassistant.const import CONF_DEVICE, CONF_SOURCE
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.selector import SerialPortSelector
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
-
-from tests.common import MockConfigEntry
 
 
 def _mock_driver(
@@ -55,6 +56,26 @@ BY_ID_PATH = "/dev/serial/by-id/usb-Lunatone_USB-DALI2"
 PORT_LABEL = "Lunatone USB-DALI2 (123456)"
 
 
+def test_luba232_uri_preserves_serial_proxy_query() -> None:
+    """Test a serial-proxy device's query parameters survive URI construction.
+
+    python-dali reads only the URI path, so the whole device string, including
+    an ESPHome serial-proxy port query, must live there rather than being split
+    into the query component and dropped.
+    """
+    uri = luba232_uri("esphome://10.0.0.5:6638?port=/dev/ttyUSB0")
+    assert uri.scheme == "luba232"
+    assert uri.path == "esphome://10.0.0.5:6638?port=/dev/ttyUSB0"
+    assert uri.query == ""
+
+
+def test_luba232_uri_plain_device() -> None:
+    """Test a plain serial device maps to the luba232 path unchanged."""
+    uri = luba232_uri("/dev/ttyACM0")
+    assert uri.scheme == "luba232"
+    assert uri.path == "/dev/ttyACM0"
+
+
 async def test_usb_discovery(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> None:
     """Test USB discovery creates an entry for the interface."""
     with (
@@ -83,7 +104,7 @@ async def test_usb_discovery(hass: HomeAssistant, mock_setup_entry: AsyncMock) -
     }
     assert result["result"].unique_id
     assert len(mock_setup_entry.mock_calls) == 1
-    driver.return_value.connect.assert_awaited_once_with()
+    driver.return_value.connect.assert_awaited_once_with(apply_settings=False)
     driver.return_value._transport.close.assert_called_once_with()
 
 
@@ -167,6 +188,25 @@ async def test_user_flow(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> No
     )
     assert len(mock_setup_entry.mock_calls) == 1
     driver.return_value._transport.close.assert_called_once_with()
+
+
+async def test_user_flow_uses_serial_port_selector(hass: HomeAssistant) -> None:
+    """Test the manual flow offers a serial port selector.
+
+    The selector is what lists DALI in the ESPHome serial-proxy setup wizard; a
+    plain enum dropdown would still work but keep DALI out of that wizard.
+    """
+    with patch(
+        "homeassistant.components.dali.config_flow.async_scan_serial_ports",
+        return_value=[USB_PORT],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert isinstance(result["data_schema"].schema[CONF_DEVICE], SerialPortSelector)
 
 
 async def test_user_flow_non_usb_port(
@@ -289,6 +329,9 @@ async def test_user_flow_enable_bus_power(
         CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2",
         CONF_BUS_POWER: True,
     }
+    assert result["result"].unique_id == usb_unique_id_from_service_info(
+        usb_service_info_from_device(USB_PORT)
+    )
     assert len(mock_setup_entry.mock_calls) == 1
 
 
@@ -325,6 +368,7 @@ async def test_usb_discovery_enable_bus_power(
         CONF_DEVICE: "/dev/serial/by-id/usb-Lunatone_USB-DALI2",
         CONF_BUS_POWER: True,
     }
+    assert result["result"].unique_id == usb_unique_id_from_service_info(DISCOVERY_INFO)
     assert len(mock_setup_entry.mock_calls) == 1
 
 
@@ -360,6 +404,9 @@ async def test_user_flow_decline_bus_power(
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_BUS_POWER] is False
+    assert result["result"].unique_id == usb_unique_id_from_service_info(
+        usb_service_info_from_device(USB_PORT)
+    )
     assert len(mock_setup_entry.mock_calls) == 1
 
 

@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from dali.gear.sequences import QueryEmergencyModeResponse, QueryEmergencyStatusResponse
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.dali.const import DOMAIN, registry_identifier
 from homeassistant.components.dali.coordinator import (
@@ -21,8 +22,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .conftest import FakeDaliDriver, decode_status
-
-from tests.common import MockConfigEntry
 
 
 def _sensor(

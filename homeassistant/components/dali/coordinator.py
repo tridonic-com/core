@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 from decimal import Decimal
 import logging
-import math
 from typing import Any, override
 
 from dali.address import (
@@ -436,16 +435,19 @@ class DaliMetadataStore(Store[dict[str, Any]]):
         return {}
 
 
+type DaliConfigEntry = ConfigEntry[DaliCoordinator]
+
+
 class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     """Coordinate DALI gear discovery and state updates."""
 
-    config_entry: ConfigEntry
+    config_entry: DaliConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
         driver: DriverLubaRs232,
-        config_entry: ConfigEntry,
+        config_entry: DaliConfigEntry,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -690,11 +692,12 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             linear_dimming = False
             if DEVICE_TYPE_LED in device_types:
                 curve = await self.driver.send(QueryDimmingCurve(gear_address))
-                linear_dimming = (
-                    curve is not None
-                    and curve.raw_value is not None
-                    and curve.raw_value.as_integer == 1
-                )
+                if curve is None or curve.raw_value is None:
+                    # A dropped dimming-curve reply would otherwise default to
+                    # the logarithmic curve and flip a linear gear's brightness;
+                    # treat it as a miss so the known-gear retry re-reads it.
+                    return None
+                linear_dimming = curve.raw_value.as_integer == 1
             supports_color_temperature = False
             supports_xy = False
             color_type_tc_active = None
@@ -781,9 +784,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             metadata = DaliDeviceData()
 
         return DaliGearData(
-            level=_dali_level_to_brightness(
-                _response_value(level), linear_dimming, config.min_level
-            ),
+            level=_dali_level_to_brightness(_response_value(level), linear_dimming),
             min_level=config.min_level,
             max_level=config.max_level,
             system_failure_level=config.system_failure_level,
@@ -1927,19 +1928,21 @@ def _instance_type_label(instance_type: int) -> str:
     return f"{name} (IEC 62386-{300 + instance_type})"
 
 
-def _dali_level_to_brightness(
-    level: object, linear_dimming: bool, min_level: int
-) -> int | None:
-    """Convert a DALI arc-power level to Home Assistant brightness."""
+def _dali_level_to_brightness(level: object, linear_dimming: bool) -> int | None:
+    """Convert a DALI arc-power level to Home Assistant brightness.
+
+    The curve depends only on the level and dimming type (IEC 62386-207); the
+    configured minimum level clamps commands, it does not rescale the readback.
+    """
     if not isinstance(level, int) or level >= 255:
         return None
     if level <= 0:
         return 0
-    if level <= min_level:
-        return 1
+    if level >= 254:
+        return 255
     if linear_dimming:
-        return round(1 + (level - min_level) * 254 / (254 - min_level))
-    return round(255 * 10 ** (((level - 254) * 3) / 253))
+        return round(1 + (level - 1) * 254 / 253)
+    return max(1, round(255 * 10 ** (((level - 254) * 3) / 253)))
 
 
 def _brightness_to_dali_level(
@@ -1949,26 +1952,16 @@ def _brightness_to_dali_level(
 
     The DALI level axis is coarser than the 1-255 brightness axis, so rounding
     each direction independently makes a set level read back as a different
-    brightness and the UI slider jumps. The level is therefore snapped to the
-    one that ``_dali_level_to_brightness`` maps back closest to the requested
-    brightness, keeping set-then-read stable wherever a matching level exists.
+    brightness and the UI slider jumps. The lowest level whose readback is
+    closest to the request is chosen instead, making the mapping a stable right
+    inverse of the readback: every reported brightness maps back to the level it
+    came from, regardless of the gear's minimum level.
     """
-    if linear_dimming:
-        analytic = min_level + (brightness - 1) * (254 - min_level) / 254
-    elif brightness < 255:
-        analytic = 254 + 253 * math.log10(brightness / 255) / 3
-    else:
-        analytic = 254
-    base = max(min_level, min(round(analytic), 254))
-    candidates = range(max(min_level, base - 2), min(254, base + 2) + 1)
     return min(
-        candidates,
+        range(min_level, 255),
         key=lambda level: (
-            abs(
-                (_dali_level_to_brightness(level, linear_dimming, min_level) or 0)
-                - brightness
-            ),
-            abs(level - base),
+            abs((_dali_level_to_brightness(level, linear_dimming) or 0) - brightness),
+            level,
         ),
     )
 

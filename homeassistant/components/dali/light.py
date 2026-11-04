@@ -21,7 +21,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import DaliConfigEntry
 from .const import (
     DEVICE_TYPE_EMERGENCY,
     DEVICE_TYPE_SWITCHING,
@@ -29,6 +28,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import (
+    DaliConfigEntry,
     DaliCoordinator,
     DaliGearData,
     _brightness_to_dali_level,
@@ -194,7 +194,7 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
                     DAPC(GearShort(self._address), level)
                 )
                 optimistic_level = _dali_level_to_brightness(
-                    level, gear_data.linear_dimming, gear_data.min_level
+                    level, gear_data.linear_dimming
                 )
             await self.coordinator.async_update_gear(self._address, optimistic_level)
         except (OSError, TimeoutError, DALISequenceError, ResponseError) as err:

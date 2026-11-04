@@ -16,9 +16,10 @@ from homeassistant.components.usb import (
 )
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_DEVICE, CONF_NAME
+from homeassistant.helpers.selector import SerialPortSelector
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
 
-from .const import CONF_BUS_POWER, DOMAIN
+from .const import CONF_BUS_POWER, DOMAIN, luba232_uri
 
 
 def _serial_port_label(port: SerialDevice) -> str:
@@ -32,13 +33,6 @@ def _serial_port_label(port: SerialDevice) -> str:
             port.vid,
             port.pid,
         )
-    return port.device
-
-
-def _unique_id_from_port(port: usb.USBDevice | usb.SerialDevice) -> str:
-    """Build the unique ID that USB discovery would assign to this port."""
-    if isinstance(port, usb.USBDevice):
-        return usb_unique_id_from_service_info(usb_service_info_from_device(port))
     return port.device
 
 
@@ -61,14 +55,18 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         the user can be asked whether to enable it. Raises OSError or
         TimeoutError when the interface cannot be reached.
         """
-        driver = DriverLubaRs232(uri=f"luba232:{device}")
+        driver = DriverLubaRs232(uri=luba232_uri(device))
         try:
-            await driver.connect()
+            # Probe read-only: do not write the interface's settings, so a bus
+            # already powered by the integrated supply is not depowered.
+            await driver.connect(apply_settings=False)
             descriptor = await driver.query_device_descriptor()
         finally:
             if transport := getattr(driver, "_transport", None):
                 transport.close()
-        return bool(descriptor and descriptor.has_bus_power_supply)
+        if descriptor is None:
+            raise OSError("Unable to read the DALI interface descriptor")
+        return bool(descriptor.has_bus_power_supply)
 
     @override
     async def async_step_user(
@@ -82,16 +80,22 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_serial_ports")
 
         errors: dict[str, str] = {}
-        if user_input is not None:
-            port = self._ports[user_input[CONF_DEVICE]]
+        # The form was rendered from an earlier scan, so the chosen port may have
+        # been unplugged before submission; fall back to the refreshed list.
+        if user_input is not None and (
+            port := self._ports.get(user_input[CONF_DEVICE])
+        ):
             if isinstance(port, USBDevice):
                 await self.async_set_unique_id(
                     usb_unique_id_from_service_info(usb_service_info_from_device(port))
                 )
                 self._abort_if_unique_id_configured()
+            else:
+                await self.async_set_unique_id(None)
             device = await self.hass.async_add_executor_job(
                 usb.get_serial_by_id, port.device
             )
+            self._async_abort_entries_match({CONF_DEVICE: device})
             try:
                 self._offer_bus_power = await self._async_probe(device)
             except OSError, TimeoutError:
@@ -100,18 +104,13 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._device = device
                 self._title = _serial_port_label(port)
                 return await self.async_step_bus_power()
+        elif user_input is not None:
+            errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id="user",
             data_schema=probatio.Schema(
-                {
-                    probatio.Required(CONF_DEVICE): probatio.In(
-                        {
-                            device: _serial_port_label(port)
-                            for device, port in self._ports.items()
-                        }
-                    )
-                }
+                {probatio.Required(CONF_DEVICE): SerialPortSelector()}
             ),
             errors=errors,
         )
@@ -147,7 +146,6 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._title = self.context["title_placeholders"][CONF_NAME]
             return await self.async_step_bus_power()
-        self._set_confirm_only()
         return self.async_show_form(step_id="usb_confirm")
 
     async def async_step_bus_power(
@@ -161,7 +159,7 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="bus_power",
             data_schema=probatio.Schema(
-                {probatio.Required(CONF_BUS_POWER, default=True): bool}
+                {probatio.Required(CONF_BUS_POWER, default=False): bool}
             ),
         )
 
@@ -169,6 +167,10 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         """Create the config entry for the selected interface."""
         assert self._device is not None
         assert self._title is not None
+        # Another manual flow may have configured the same port while this one
+        # waited at the bus-power step; manual ports have no unique ID for the
+        # flow manager to deduplicate, so re-check before creating the entry.
+        self._async_abort_entries_match({CONF_DEVICE: self._device})
         return self.async_create_entry(
             title=self._title,
             data={CONF_DEVICE: self._device, CONF_BUS_POWER: bus_power},

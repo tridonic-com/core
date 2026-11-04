@@ -64,7 +64,7 @@
         'hardware_version': '2.1',
         'identification_number': 1,
         'last_memory_bank': 207,
-        'level': 64,
+        'level': 129,
         'lifetime': None,
         'linear_dimming': True,
         'luminaire': dict({

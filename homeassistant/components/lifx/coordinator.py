@@ -9,6 +9,7 @@ from lifx import (
     STATE_REFRESH_DEBOUNCE_MS,
     CeilingLightState,
     Colors,
+    Connectivity,
     Device,
     HevLight,
     HevLightState,
@@ -20,19 +21,26 @@ from lifx import (
     LightWaveform,
     MatrixLight,
     MatrixLightState,
+    MirrorLightState,
     MultiZoneLight,
     MultiZoneLightState,
     ThemeLibrary,
 )
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import SIGNAL_STRENGTH_DECIBELS_MILLIWATT, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.debounce import Debouncer
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, INFRARED_LEVELS, LIFX_IDENTIFY_DELAY, LOGGER
+from .const import (
+    DOMAIN,
+    INFRARED_LEVELS,
+    LIFX_IDENTIFY_DELAY,
+    LOGGER,
+    MAX_MISSED_POLLS,
+)
 from .util import device_error
 
 type LIFXState = (
@@ -40,6 +48,7 @@ type LIFXState = (
     | MultiZoneLightState
     | MatrixLightState
     | CeilingLightState
+    | MirrorLightState
     | HevLightState
     | InfraredLightState
 )
@@ -56,6 +65,7 @@ class LIFXUpdateCoordinator(DataUpdateCoordinator[LIFXState]):
         """Initialize the coordinator."""
         self.device = device
         self.last_used_theme: str | None = None
+        self._missed_polls = 0
         super().__init__(
             hass,
             LOGGER,
@@ -79,14 +89,36 @@ class LIFXUpdateCoordinator(DataUpdateCoordinator[LIFXState]):
         try:
             await self.device.refresh_state()
         except LifxError as err:
+            self._missed_polls += 1
+            # Before the first read there is no last state to keep showing, and
+            # returning it would bring back a light that is already unavailable
+            if (
+                self.data is not None
+                and self.last_update_success
+                and self._missed_polls < MAX_MISSED_POLLS
+            ):
+                LOGGER.debug(
+                    "%s missed %s of %s polls: %s",
+                    self.name,
+                    self._missed_polls,
+                    MAX_MISSED_POLLS,
+                    err,
+                )
+                return self.data
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        self._missed_polls = 0
         state = self.device.state
         assert state is not None
         return cast(LIFXState, state)
+
+    @property
+    def last_read_succeeded(self) -> bool:
+        """Return whether the device answered the latest read of its state."""
+        return self._missed_polls == 0
 
     @property
     def serial_number(self) -> str:
@@ -111,17 +143,19 @@ class LIFXUpdateCoordinator(DataUpdateCoordinator[LIFXState]):
     @property
     def rssi(self) -> int | None:
         """Return the library-calculated signal strength."""
+        if self.device.connectivity is Connectivity.THREAD:
+            return self.data.thread_info.rssi if self.data.thread_info else None
         return self.data.wifi_info.rssi
 
     @property
     def rssi_uom(self) -> str | None:
         """Return the library-classified signal-strength unit.
 
-        The library resolves the unit from the firmware version, so it is on
-        the state from the first refresh even while the signal itself is not
-        being read: a sensor registered without a unit and given one later
-        breaks its long term statistics.
+        Thread reports dBm; the library resolves Wi-Fi units from firmware.
+        Set the unit before the first reading to preserve long term statistics.
         """
+        if self.device.connectivity is Connectivity.THREAD:
+            return SIGNAL_STRENGTH_DECIBELS_MILLIWATT
         return self.data.wifi_info.rssi_unit
 
     def async_get_entity_id(self, platform: Platform, key: str) -> str | None:
@@ -171,9 +205,9 @@ class LIFXUpdateCoordinator(DataUpdateCoordinator[LIFXState]):
 
         @callback
         def _async_disable_rssi_updates() -> None:
-            self.device.fetch_wifi_info = False
+            self.device.fetch_radio_info = False
 
-        self.device.fetch_wifi_info = True
+        self.device.fetch_radio_info = True
         return _async_disable_rssi_updates
 
     async def async_set_infrared_brightness(self, option: str) -> None:

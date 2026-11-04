@@ -7,6 +7,7 @@ from dali.memory import info
 from dali.memory.location import FlagValue, MemoryValue
 from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import SCAN_INTERVAL
@@ -24,8 +25,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .conftest import FakeDaliDriver
-
-from tests.common import MockConfigEntry, async_fire_time_changed
 
 # A GTIN carrying Tridonic's GS1 company prefix, which is what gates the
 # manufacturer-specific bank 4 read.

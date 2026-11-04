@@ -5,6 +5,7 @@ from unittest.mock import patch
 from dali.device.general import IdentifyDevice as IdentifyControlDevice
 from dali.gear.general import IdentifyDevice
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
 from homeassistant.components.dali.button import (
@@ -26,8 +27,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
 from .conftest import FakeDaliDriver
-
-from tests.common import MockConfigEntry
 
 
 async def test_identify_press_sends_identify_command(

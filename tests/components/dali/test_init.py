@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from dali.exceptions import DALISequenceError, TransmissionError
 from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.components.dali import async_remove_config_entry_device
 from homeassistant.components.dali.const import (
@@ -21,8 +22,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .conftest import FakeDaliDriver
-
-from tests.common import MockConfigEntry, async_fire_time_changed
 
 
 async def test_setup_and_unload_entry(

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components import dali
 from homeassistant.components.dali.const import DOMAIN
@@ -22,8 +23,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .conftest import FakeDaliDriver
-
-from tests.common import MockConfigEntry
 
 FADE_TIME_ENTITY = "select.usb_dali2_0_gear_fade_time"
 FADE_RATE_ENTITY = "select.usb_dali2_0_gear_fade_rate"

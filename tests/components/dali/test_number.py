@@ -5,6 +5,7 @@ from unittest.mock import patch
 from dali.address import GearShort
 from dali.gear.general import DTR0, SetMinLevel
 import pytest
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.components.dali.const import DOMAIN
 from homeassistant.components.dali.coordinator import DaliCoordinator
@@ -24,8 +25,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .conftest import FakeDaliDriver
-
-from tests.common import MockConfigEntry
 
 MIN_LEVEL_ENTITY = "number.usb_dali2_0_gear_minimum_level"
 MAX_LEVEL_ENTITY = "number.usb_dali2_0_gear_maximum_level"
