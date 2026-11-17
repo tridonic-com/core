@@ -1,8 +1,18 @@
 """Constants for the Tridonic DALI integration."""
 
+from collections.abc import Callable
 from urllib.parse import ParseResult
 
+from dali.address import GearShort
+from dali.command import Command
+
 DOMAIN = "dali"
+
+# A control-gear command class, called with a short address to build its frame.
+# The base ``Command`` constructor takes a ``ForwardFrame``; the gear command
+# subclasses override it to take an address, so the field cannot be typed as a
+# plain ``type[Command]``.
+type AddressableGearCommand = Callable[[GearShort], Command]
 
 
 def luba232_uri(device: str) -> ParseResult:

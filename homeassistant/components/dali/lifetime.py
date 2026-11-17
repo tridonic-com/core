@@ -28,7 +28,7 @@ BANK_4 = MemoryBank(4, 0x67, has_lock=True)
 UNIT_PERCENT_PER_YEAR = "%/year"
 
 
-class DriverHealth(FixedScaleNumericValue):  # type: ignore[misc]
+class DriverHealth(FixedScaleNumericValue):
     """Remaining health of the driver, as a percentage.
 
     Starts at 100% and falls to 0% as the capacitors reach the end of their
@@ -39,11 +39,11 @@ class DriverHealth(FixedScaleNumericValue):  # type: ignore[misc]
     bank = BANK_4
     unit = "%"
     scaling_factor = Decimal("0.5")
-    max_value = 200
+    max_raw_value = 200
     locations = MemoryLocation(address=0x42, default=0xC8, type_=MemoryType.ROM)
 
 
-class CurrentAgingRate(FixedScaleNumericValue):  # type: ignore[misc]
+class CurrentAgingRate(FixedScaleNumericValue):
     """How fast the capacitors are ageing right now, in percent per year.
 
     The reciprocal of the capacitor lifetime at the present temperature, so a
@@ -54,11 +54,11 @@ class CurrentAgingRate(FixedScaleNumericValue):  # type: ignore[misc]
     bank = BANK_4
     unit = UNIT_PERCENT_PER_YEAR
     scaling_factor = Decimal("0.2")
-    max_value = 250
+    max_raw_value = 250
     locations = MemoryLocation(address=0x43, default=0x00, type_=MemoryType.ROM)
 
 
-class AgingRateLastMonth(FixedScaleNumericValue):  # type: ignore[misc]
+class AgingRateLastMonth(FixedScaleNumericValue):
     """Ageing rate averaged over the last month (744 h), in percent per year.
 
     A driver reports nothing for its first month of operation, before the
@@ -68,11 +68,11 @@ class AgingRateLastMonth(FixedScaleNumericValue):  # type: ignore[misc]
     bank = BANK_4
     unit = UNIT_PERCENT_PER_YEAR
     scaling_factor = Decimal("0.1")
-    max_value = 250
+    max_raw_value = 250
     locations = MemoryLocation(address=0x44, default=0x00, type_=MemoryType.ROM)
 
 
-class AgingRateLastYear(FixedScaleNumericValue):  # type: ignore[misc]
+class AgingRateLastYear(FixedScaleNumericValue):
     """Ageing rate averaged over the last year (8760 h), in percent per year.
 
     Reported from the first month of operation onwards, as with the monthly
@@ -82,7 +82,7 @@ class AgingRateLastYear(FixedScaleNumericValue):  # type: ignore[misc]
     bank = BANK_4
     unit = UNIT_PERCENT_PER_YEAR
     scaling_factor = Decimal("0.1")
-    max_value = 250
+    max_raw_value = 250
     locations = MemoryLocation(address=0x45, default=0x00, type_=MemoryType.ROM)
 
 

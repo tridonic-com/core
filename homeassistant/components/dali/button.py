@@ -32,7 +32,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_TYPE_EMERGENCY, DOMAIN
+from .const import DEVICE_TYPE_EMERGENCY, DOMAIN, AddressableGearCommand
 from .coordinator import DaliConfigEntry, DaliCoordinator
 
 PARALLEL_UPDATES = 1
@@ -42,7 +42,7 @@ PARALLEL_UPDATES = 1
 class DaliEmergencyButtonDescription(ButtonEntityDescription):
     """Description of a DT1 emergency command button."""
 
-    command: type[Command]
+    command: AddressableGearCommand
 
 
 EMERGENCY_BUTTON_TYPES: tuple[DaliEmergencyButtonDescription, ...] = (

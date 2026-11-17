@@ -104,7 +104,7 @@ from .const import (
     unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
 )
-from .helpers import MASK_LEVEL
+from .helpers import MASK_LEVEL, run_sequence
 from .lifetime import (
     BANK_4,
     OPERATING_TIME_VALUES,
@@ -353,9 +353,12 @@ class DaliEmergencyData:
         maintained gear keeps the lamp lit from the mains and so behaves as a
         dimmable light, whereas a non-maintained gear only lights in emergency.
         """
-        return self.features is not None and (
-            self.features.maintained_control_gear
-            or self.features.switched_maintained_control_gear
+        return bool(
+            self.features is not None
+            and (
+                self.features.maintained_control_gear
+                or self.features.switched_maintained_control_gear
+            )
         )
 
 
@@ -717,49 +720,56 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
                             status.colour_type_colour_temperature_Tc_active == 1
                         )
                 if supports_color_temperature:
-                    color_temp_mired = await self.driver.send(
+                    color_temp_mired = await run_sequence(
+                        self.driver,
                         QueryDT8ColourValue(
                             gear_address, QueryColourValueDTR.ColourTemperatureTC
-                        )
+                        ),
                     )
                     # The gear only accepts values within its configured Tc
                     # limits; fall back to the physical limits when unset.
-                    color_temp_min_mired = await self.driver.send(
+                    color_temp_min_mired = await run_sequence(
+                        self.driver,
                         QueryDT8ColourValue(
                             gear_address,
                             QueryColourValueDTR.ColourTemperatureTcCoolest,
-                        )
+                        ),
                     )
                     if color_temp_min_mired is None:
-                        color_temp_min_mired = await self.driver.send(
+                        color_temp_min_mired = await run_sequence(
+                            self.driver,
                             QueryDT8ColourValue(
                                 gear_address,
                                 QueryColourValueDTR.ColourTemperatureTcPhysicalCoolest,
-                            )
+                            ),
                         )
-                    color_temp_max_mired = await self.driver.send(
+                    color_temp_max_mired = await run_sequence(
+                        self.driver,
                         QueryDT8ColourValue(
                             gear_address,
                             QueryColourValueDTR.ColourTemperatureTcWarmest,
-                        )
+                        ),
                     )
                     if color_temp_max_mired is None:
-                        color_temp_max_mired = await self.driver.send(
+                        color_temp_max_mired = await run_sequence(
+                            self.driver,
                             QueryDT8ColourValue(
                                 gear_address,
                                 QueryColourValueDTR.ColourTemperatureTcPhysicalWarmest,
-                            )
+                            ),
                         )
                 if supports_xy:
-                    x = await self.driver.send(
+                    x = await run_sequence(
+                        self.driver,
                         QueryDT8ColourValue(
                             gear_address, QueryColourValueDTR.XCoordinate
-                        )
+                        ),
                     )
-                    y = await self.driver.send(
+                    y = await run_sequence(
+                        self.driver,
                         QueryDT8ColourValue(
                             gear_address, QueryColourValueDTR.YCoordinate
-                        )
+                        ),
                     )
                     if isinstance(x, int) and isinstance(y, int):
                         xy_color = (x / 65535, y / 65535)
@@ -826,7 +836,9 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         over part 102.
         """
         try:
-            return tuple(await self.driver.send(QueryDeviceTypes(gear_address)))
+            return tuple(
+                await run_sequence(self.driver, QueryDeviceTypes(gear_address))
+            )
         except DALISequenceError:
             return ()
 
@@ -873,12 +885,12 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         read entirely so the initial refresh is not held up by it; the periodic
         refresh fills the diagnostics in afterwards.
         """
-        info_ = await self.driver.send(QueryEmergencyInformation(gear_address))
+        info_ = await run_sequence(self.driver, QueryEmergencyInformation(gear_address))
         memory: dict[type, Any] = {}
         if not fast:
             try:
-                memory = await self.driver.send(
-                    emergency.BANK_208.read_all(gear_address)
+                memory = await run_sequence(
+                    self.driver, emergency.BANK_208.read_all(gear_address)
                 )
             except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
                 memory = {}
@@ -888,12 +900,12 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             features=info_.emergency_features,
             failure_status=info_.emergency_failure_status,
             status=info_.emergency_status,
-            battery_charge=info_.battery_charge,
-            emergency_level=info_.emergency_level,
-            duration_test_result=info_.duration_test_result,
-            lamp_emergency_time=info_.lamp_emergency_time,
-            lamp_total_operation_time=info_.lamp_total_operation_time,
-            rated_duration=info_.rated_duration,
+            battery_charge=_response_value(info_.battery_charge),
+            emergency_level=_response_value(info_.emergency_level),
+            duration_test_result=_response_value(info_.duration_test_result),
+            lamp_emergency_time=_response_value(info_.lamp_emergency_time),
+            lamp_total_operation_time=_response_value(info_.lamp_total_operation_time),
+            rated_duration=_response_value(info_.rated_duration),
             control_gear_temperature=_memory_int(
                 memory.get(emergency.ControlGearTemperature)
             ),
@@ -949,7 +961,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     async def _query_metadata(self, address: GearShort | DeviceShort) -> DaliDeviceData:
         """Read optional identification data from memory bank 0."""
         try:
-            values = await self.driver.send(info.BANK_0.read_all(address))
+            values = await run_sequence(self.driver, info.BANK_0.read_all(address))
         except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
             return DaliDeviceData()
 
@@ -977,7 +989,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         """
         values: dict[type[MemoryValue], Any]
         try:
-            values = await self.driver.send(bank.read_all(gear_address))
+            values = await run_sequence(self.driver, bank.read_all(gear_address))
         except DALISequenceError, MemoryLocationNotImplemented, ResponseError:
             return None
         return values
@@ -1789,8 +1801,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
 
     async def async_assign_control_device_short_addresses(self) -> bool:
         """Address unaddressed control devices; return whether any remain unaddressed."""
-        await self.driver.send(
-            CommissionDevices(readdress=False), progress=_log_commissioning_progress
+        await run_sequence(
+            self.driver,
+            CommissionDevices(readdress=False),
+            on_progress=_log_commissioning_progress,
         )
         # Newly addressed devices only surface as entities once re-enumerated into
         # the instance map; discovery is additive, so it folds them in.

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import override
 
 from dali.address import GearShort
-from dali.command import Command
 from dali.exceptions import DALISequenceError, ResponseError
 from dali.gear.general import (
     SetExtendedFadeTime,
@@ -26,7 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, AddressableGearCommand
 from .coordinator import DaliConfigEntry, DaliCoordinator, DaliGearData
 from .helpers import (
     EXTENDED_FADE_TIME_STEP,
@@ -45,7 +44,7 @@ PARALLEL_UPDATES = 1
 class DaliGearNumberDescription(NumberEntityDescription):
     """Description of a writable DALI control gear configuration variable."""
 
-    command: type[Command]
+    command: AddressableGearCommand
     value_fn: Callable[[DaliGearData], float | None]
     encode_fn: Callable[[float], int]
     supported_fn: Callable[[DaliGearData], bool] = lambda gear: True

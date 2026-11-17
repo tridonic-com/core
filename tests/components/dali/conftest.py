@@ -8,7 +8,7 @@ from types import GeneratorType, SimpleNamespace
 from typing import TypeVar
 from unittest.mock import AsyncMock, patch
 
-from dali.command import Command, Response
+from dali.command import Command, NumericResponse, NumericResponseMask, Response
 from dali.device.general import (
     DTR0 as DeviceDTR0,
     DTR1 as DeviceDTR1,
@@ -450,7 +450,22 @@ class FakeDaliDriver:
                 emergency_status=decode_status(
                     QueryEmergencyStatusResponse, info_.pop("emergency_status")
                 ),
-                **info_,
+                battery_charge=NumericResponseMask(
+                    BackwardFrame(info_["battery_charge"])
+                ),
+                emergency_level=NumericResponseMask(
+                    BackwardFrame(info_["emergency_level"])
+                ),
+                duration_test_result=NumericResponse(
+                    BackwardFrame(info_["duration_test_result"])
+                ),
+                lamp_emergency_time=NumericResponse(
+                    BackwardFrame(info_["lamp_emergency_time"])
+                ),
+                lamp_total_operation_time=NumericResponse(
+                    BackwardFrame(info_["lamp_total_operation_time"])
+                ),
+                rated_duration=NumericResponse(BackwardFrame(info_["rated_duration"])),
             )
         if sequence.__name__ == "set_dtr0_variable":
             frame_locals = sequence.gi_frame.f_locals

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import override
 
 from dali.address import GearShort
-from dali.command import Command
 from dali.exceptions import DALISequenceError, ResponseError
 from dali.gear.general import SetFadeRate, SetFadeTime
 
@@ -16,7 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, AddressableGearCommand
 from .coordinator import DaliConfigEntry, DaliCoordinator, DaliGearData
 from .helpers import (
     FADE_RATE_CODES,
@@ -33,7 +32,7 @@ PARALLEL_UPDATES = 1
 class DaliGearSelectDescription(SelectEntityDescription):
     """Description of a DALI control gear fade setting."""
 
-    command: type[Command]
+    command: AddressableGearCommand
     value_fn: Callable[[DaliGearData], int | None]
     option_for_code: dict[int, str]
     code_for_option: dict[str, int]

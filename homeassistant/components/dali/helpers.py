@@ -6,11 +6,18 @@ These helpers translate between those encodings and the values the entities
 present, and build the DTR0 write sequence shared by both config platforms.
 """
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from typing import TypeVar, cast
 
 from dali.address import GearShort
 from dali.command import Command, Response
+from dali.driver.serial import DriverLubaRs232
 from dali.gear.general import DTR0
+from dali.sequences import DALISequence, progress
+
+from .const import AddressableGearCommand
+
+_T = TypeVar("_T")
 
 # fadeTime = 0.5 * sqrt(2 ** code) seconds. Code 0 selects the extended fade
 # time instead. The values are tabulated rather than computed because IEC
@@ -107,7 +114,7 @@ def encode_extended_fade_time(seconds: float) -> int:
 
 
 def set_dtr0_variable(
-    command: type[Command], address: GearShort, value: int
+    command: AddressableGearCommand, address: GearShort, value: int
 ) -> Generator[Command, Response | None]:
     """Create the sequence that writes a DTR0-sourced configuration variable.
 
@@ -117,3 +124,23 @@ def set_dtr0_variable(
     """
     yield DTR0(value)
     yield command(address)
+
+
+async def run_sequence(
+    driver: DriverLubaRs232,
+    sequence: DALISequence[_T],
+    *,
+    on_progress: Callable[[str | progress], None] | None = None,
+) -> _T:
+    """Run a DALI sequence as a single transaction and return its result.
+
+    python-dali types ``DriverLubaRs232.send``'s message as a bare
+    ``Generator``, which PEP 696 resolves to ``Generator[Any, None, None]`` and
+    so rejects a value-returning ``DALISequence``. The cast confines that
+    upstream mismatch to one place until ``send`` accepts a ``DALISequence``.
+    """
+    if on_progress is None:
+        result = await driver.send(sequence)  # type: ignore[arg-type]
+    else:
+        result = await driver.send(sequence, progress=on_progress)  # type: ignore[arg-type]
+    return cast("_T", result)

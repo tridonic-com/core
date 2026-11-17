@@ -176,7 +176,9 @@ class DaliLight(CoordinatorEntity[DaliCoordinator], LightEntity):
             gear_data = self.coordinator.data[self._address]
             if color_temp := kwargs.get("color_temp_kelvin"):
                 await self.coordinator.driver.send(
-                    SetDT8ColourValueTc(self._address, tc_kelvin_mirek(color_temp))
+                    SetDT8ColourValueTc(
+                        GearShort(self._address), tc_kelvin_mirek(color_temp)
+                    )
                 )
             if xy_color := kwargs.get("xy_color"):
                 await self.coordinator.driver.send(
