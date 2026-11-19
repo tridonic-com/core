@@ -32,7 +32,6 @@ from dali.device.general_sensor import (
     QueryMeasurementVariable,
 )
 from dali.device.sequences import Commissioning as CommissionDevices
-from dali.driver.serial import DriverLubaRs232
 from dali.exceptions import (
     DALISequenceError,
     MemoryLocationNotImplemented,
@@ -58,6 +57,8 @@ from dali.gear.general import (
 )
 from dali.gear.led import QueryDimmingCurve
 from dali.gear.sequences import (
+    Commissioning,
+    QueryDeviceTypes,
     QueryDT8ColourValue,
     QueryEmergencyFailureStatusResponse,
     QueryEmergencyFeaturesResponse,
@@ -74,7 +75,8 @@ from dali.memory import (
     oem,
 )
 from dali.memory.location import FlagValue, MemoryBank, MemoryValue
-from dali.sequences import Commissioning, QueryDeviceTypes, progress
+from dali.sequences import progress
+from dalidrivers.misc.serial import DriverLubaRs232
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback

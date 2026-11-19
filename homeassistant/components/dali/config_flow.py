@@ -2,7 +2,7 @@
 
 from typing import Any, override
 
-from dali.driver.serial import DriverLubaRs232
+from dalidrivers.misc.serial import DriverLubaRs232
 import probatio
 
 from homeassistant.components import usb

@@ -11,9 +11,9 @@ from typing import TypeVar, cast
 
 from dali.address import GearShort
 from dali.command import Command, Response
-from dali.driver.serial import DriverLubaRs232
 from dali.gear.general import DTR0
 from dali.sequences import DALISequence, progress
+from dalidrivers.misc.serial import DriverLubaRs232
 
 from .const import AddressableGearCommand
 
@@ -134,13 +134,11 @@ async def run_sequence(
 ) -> _T:
     """Run a DALI sequence as a single transaction and return its result.
 
-    python-dali types ``DriverLubaRs232.send``'s message as a bare
-    ``Generator``, which PEP 696 resolves to ``Generator[Any, None, None]`` and
-    so rejects a value-returning ``DALISequence``. The cast confines that
-    upstream mismatch to one place until ``send`` accepts a ``DALISequence``.
+    ``DriverLubaRs232.send`` is annotated to return ``Any``; this wrapper
+    restores the sequence's declared return type for its callers.
     """
     if on_progress is None:
-        result = await driver.send(sequence)  # type: ignore[arg-type]
+        result = await driver.send(sequence)
     else:
-        result = await driver.send(sequence, progress=on_progress)  # type: ignore[arg-type]
+        result = await driver.send(sequence, progress=on_progress)
     return cast("_T", result)

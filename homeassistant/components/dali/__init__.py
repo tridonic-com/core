@@ -1,7 +1,7 @@
 """The Tridonic DALI integration."""
 
-from dali.driver.serial import DriverLubaRs232
 from dali.exceptions import TransmissionError
+from dalidrivers.misc.serial import DriverLubaRs232
 
 from homeassistant.const import CONF_DEVICE, Platform
 from homeassistant.core import HomeAssistant

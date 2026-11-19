@@ -14,7 +14,7 @@
   "quality_scale": "platinum",
   "requirements": [
     "python-dali @ git+https://github.com/sde1000/python-dali@typing",
-    "serialx==1.15.1"
+    "dali-drivers[driver-serial]==0.2"
   ],
   "usb": [
     {
