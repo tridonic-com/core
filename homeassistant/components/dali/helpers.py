@@ -13,11 +13,17 @@ from dali.address import GearShort
 from dali.command import Command, Response
 from dali.gear.general import DTR0
 from dali.sequences import DALISequence, progress
-from dalidrivers.misc.serial import DriverLubaRs232
+from dalidrivers.typed.hid import tridonic
+from dalidrivers.typed.serial import DriverLubaRs232
 
 from .const import AddressableGearCommand
 
 _T = TypeVar("_T")
+
+# A connected DALI driver, regardless of the USB interface behind it. Both
+# typed drivers share the connect()/send()/new_dali_rx_queue()/close()
+# interface the coordinator relies on.
+type DaliDriver = DriverLubaRs232 | tridonic
 
 # fadeTime = 0.5 * sqrt(2 ** code) seconds. Code 0 selects the extended fade
 # time instead. The values are tabulated rather than computed because IEC
@@ -127,7 +133,7 @@ def set_dtr0_variable(
 
 
 async def run_sequence(
-    driver: DriverLubaRs232,
+    driver: DaliDriver,
     sequence: DALISequence[_T],
     *,
     on_progress: Callable[[str | progress], None] | None = None,

@@ -11,9 +11,12 @@ from pytest_homeassistant.common import MockConfigEntry, async_fire_time_changed
 from homeassistant.components.dali import async_remove_config_entry_device
 from homeassistant.components.dali.const import (
     CONF_BUS_POWER,
+    CONF_INTERFACE,
     DOMAIN,
+    INTERFACE_HID,
     bus_overload_issue_id,
     bus_voltage_error_issue_id,
+    hidraw_not_accessible_issue_id,
 )
 from homeassistant.components.dali.coordinator import SCAN_INTERVAL
 from homeassistant.config_entries import ConfigEntryState
@@ -121,6 +124,35 @@ async def test_setup_bus_voltage_error_creates_repair(
     assert fake_dali_driver.closed
     assert issue_registry.async_get_issue(
         DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
+    )
+
+
+async def test_setup_hid_permission_error_creates_repair(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    issue_registry: ir.IssueRegistry,
+) -> None:
+    """Test an inaccessible HID node raises the udev repair and retries setup."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_DEVICE: "/dev/hidraw0", CONF_INTERFACE: INTERFACE_HID},
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "homeassistant.components.dali.tridonic",
+            return_value=fake_dali_driver,
+        ),
+        patch.object(
+            fake_dali_driver, "connect", side_effect=PermissionError("denied")
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert fake_dali_driver.closed
+    assert issue_registry.async_get_issue(
+        DOMAIN, hidraw_not_accessible_issue_id(entry.entry_id)
     )
 
 

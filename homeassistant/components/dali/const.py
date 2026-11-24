@@ -27,6 +27,12 @@ def luba232_uri(device: str) -> ParseResult:
 
 CONF_BUS_POWER = "bus_power"
 
+# Which USB interface the dongle presents. Serial (LUBA, 17B5:0201) is the
+# default; HID (17B5:0020) is the Tridonic/Lunatone DALI-USB.
+CONF_INTERFACE = "interface"
+INTERFACE_SERIAL = "serial"
+INTERFACE_HID = "hid"
+
 # IEC 62386 control-gear device types.
 DEVICE_TYPE_FLUORESCENT = 0
 DEVICE_TYPE_EMERGENCY = 1
@@ -87,6 +93,7 @@ ISSUE_UNADDRESSED_CONTROLDEVICE = "unaddressed_controldevice"
 ISSUE_BUS_VOLTAGE_ERROR = "bus_voltage_error"
 ISSUE_BUS_OVERLOAD = "bus_overload"
 ISSUE_ADDRESS_COLLISION = "address_collision"
+ISSUE_HIDRAW_NOT_ACCESSIBLE = "hidraw_not_accessible"
 
 # Registry-identifier infixes. Control gear and control devices have
 # independent DALI short-address spaces, so the kind is encoded to keep a
@@ -124,3 +131,8 @@ def bus_overload_issue_id(entry_id: str) -> str:
 def address_collision_issue_id(entry_id: str) -> str:
     """Return the repair issue ID for a DALI short-address collision."""
     return f"{ISSUE_ADDRESS_COLLISION}_{entry_id}"
+
+
+def hidraw_not_accessible_issue_id(entry_id: str) -> str:
+    """Return the repair issue ID for an inaccessible HID interface node."""
+    return f"{ISSUE_HIDRAW_NOT_ACCESSIBLE}_{entry_id}"

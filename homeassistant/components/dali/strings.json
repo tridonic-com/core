@@ -2,6 +2,7 @@
   "config": {
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "no_hid_devices": "No DALI-USB (HID) interface was found. Connect it and install the udev rule so Home Assistant can access it, then try again.",
       "no_serial_ports": "No serial ports were found. Connect the Lunatone USB-DALI2 interface, then try again."
     },
     "error": {
@@ -18,10 +19,17 @@
         "description": "This interface has an integrated DALI bus power supply. Switch it on to power the bus?",
         "title": "DALI bus power"
       },
-      "usb_confirm": {
-        "title": "USB-DALI2 interface"
+      "hid": {
+        "data": {
+          "device": "DALI-USB interface"
+        },
+        "data_description": {
+          "device": "The Tridonic/Lunatone DALI-USB (HID) interface to connect to."
+        },
+        "description": "Select the DALI-USB (HID) interface to add.",
+        "title": "DALI-USB (HID) interface"
       },
-      "user": {
+      "serial": {
         "data": {
           "device": "Serial port"
         },
@@ -30,6 +38,17 @@
         },
         "description": "Select the serial port that the Lunatone USB-DALI2 interface is connected to.",
         "title": "USB-DALI2 interface"
+      },
+      "usb_confirm": {
+        "title": "USB-DALI2 interface"
+      },
+      "user": {
+        "description": "Select the type of DALI-USB interface to add.",
+        "menu_options": {
+          "hid": "DALI-USB (HID)",
+          "serial": "Serial (USB-DALI2)"
+        },
+        "title": "DALI interface"
       }
     }
   },
@@ -499,6 +518,10 @@
         }
       },
       "title": "No power on the DALI bus on {title}"
+    },
+    "hidraw_not_accessible": {
+      "description": "Home Assistant cannot open the DALI-USB (HID) interface at `{device}` because the device node is not accessible. Install the udev rule so the node is readable by the `dialout` group, add the Home Assistant user to that group, then replug the interface. Home Assistant keeps retrying and clears this issue once the interface can be opened.",
+      "title": "Cannot access the DALI-USB (HID) interface"
     },
     "unaddressed_controldevice": {
       "fix_flow": {

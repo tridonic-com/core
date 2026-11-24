@@ -608,6 +608,10 @@ class FakeDaliDriver:
         self.closed = True
         self.connected = False
 
+    def close(self) -> None:
+        """Close the driver, matching the typed drivers' uniform interface."""
+        self._close()
+
 
 @pytest.fixture
 def fake_dali_driver() -> FakeDaliDriver:

@@ -1,7 +1,8 @@
 """The Tridonic DALI integration."""
 
 from dali.exceptions import TransmissionError
-from dalidrivers.misc.serial import DriverLubaRs232
+from dalidrivers.typed.hid import tridonic
+from dalidrivers.typed.serial import DriverLubaRs232
 
 from homeassistant.const import CONF_DEVICE, Platform
 from homeassistant.core import HomeAssistant
@@ -12,9 +13,13 @@ from homeassistant.helpers.storage import Store
 
 from .const import (
     CONF_BUS_POWER,
+    CONF_INTERFACE,
     CONTROL_DEVICE_ID_INFIX,
     DOMAIN,
     GEAR_ID_INFIX,
+    INTERFACE_HID,
+    ISSUE_HIDRAW_NOT_ACCESSIBLE,
+    hidraw_not_accessible_issue_id,
     luba232_uri,
     unaddressed_gear_issue_id,
 )
@@ -25,6 +30,7 @@ from .coordinator import (
     clear_bus_voltage_issues,
     raise_bus_voltage_issue,
 )
+from .helpers import DaliDriver
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
@@ -39,28 +45,51 @@ PLATFORMS: list[Platform] = [
 
 async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
     """Set up Tridonic DALI from a config entry."""
-    driver = DriverLubaRs232(
-        uri=luba232_uri(entry.data[CONF_DEVICE]),
-        bus_power=entry.data.get(CONF_BUS_POWER, False),
-    )
+    bus_power = entry.data.get(CONF_BUS_POWER, False)
+    driver: DaliDriver
+    if entry.data.get(CONF_INTERFACE) == INTERFACE_HID:
+        driver = tridonic(path=entry.data[CONF_DEVICE])
+    else:
+        driver = DriverLubaRs232(
+            uri=luba232_uri(entry.data[CONF_DEVICE]), bus_power=bus_power
+        )
     try:
         await driver.connect(scan_dev_inst=True)
+        if isinstance(driver, tridonic) and bus_power:
+            # The serial driver applies its integrated supply during connect()
+            # from the constructor flag; the HID driver toggles it afterwards.
+            await driver.power_supply(True)
     except TransmissionError as err:
-        if transport := getattr(driver, "_transport", None):
-            transport.close()
+        driver.close()
         raise_bus_voltage_issue(hass, entry, err)
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="cannot_connect",
         ) from err
+    except PermissionError as err:
+        driver.close()
+        if entry.data.get(CONF_INTERFACE) == INTERFACE_HID:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                hidraw_not_accessible_issue_id(entry.entry_id),
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key=ISSUE_HIDRAW_NOT_ACCESSIBLE,
+                translation_placeholders={"device": entry.data[CONF_DEVICE]},
+            )
+        raise ConfigEntryNotReady(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect",
+        ) from err
     except (OSError, TimeoutError) as err:
-        if transport := getattr(driver, "_transport", None):
-            transport.close()
+        driver.close()
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="cannot_connect",
         ) from err
     clear_bus_voltage_issues(hass, entry.entry_id)
+    ir.async_delete_issue(hass, DOMAIN, hidraw_not_accessible_issue_id(entry.entry_id))
     coordinator = DaliCoordinator(hass, driver, entry)
     await coordinator.async_load_metadata_cache()
     try:
@@ -89,6 +118,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> Non
 async def async_remove_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None:
     """Remove repair issues and cached metadata of a removed config entry."""
     ir.async_delete_issue(hass, DOMAIN, unaddressed_gear_issue_id(entry.entry_id))
+    ir.async_delete_issue(hass, DOMAIN, hidraw_not_accessible_issue_id(entry.entry_id))
     clear_bus_voltage_issues(hass, entry.entry_id)
     await Store(
         hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}_metadata"

@@ -1,8 +1,11 @@
 """Config flow for the Tridonic DALI integration."""
 
+import glob
+import os
 from typing import Any, override
 
-from dalidrivers.misc.serial import DriverLubaRs232
+from dalidrivers.typed.hid import tridonic
+from dalidrivers.typed.serial import DriverLubaRs232
 import probatio
 
 from homeassistant.components import usb
@@ -16,10 +19,55 @@ from homeassistant.components.usb import (
 )
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_DEVICE, CONF_NAME
-from homeassistant.helpers.selector import SerialPortSelector
+from homeassistant.helpers.selector import (
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SerialPortSelector,
+)
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
 
-from .const import CONF_BUS_POWER, DOMAIN, luba232_uri
+from .const import (
+    CONF_BUS_POWER,
+    CONF_INTERFACE,
+    DOMAIN,
+    INTERFACE_HID,
+    INTERFACE_SERIAL,
+    luba232_uri,
+)
+
+# The Tridonic/Lunatone DALI-USB (HID) USB identifiers, matched in sysfs.
+HID_VID = 0x17B5
+HID_PID = 0x0020
+# udev (50-dali-hid.rules) symlinks the hidraw node here, keyed by serial.
+HID_SYMLINK_GLOB = "/dev/dali/daliusb-*"
+
+
+def _scan_hid_devices() -> dict[str, str]:
+    """Return a device-node -> label map of connected DALI-USB HID interfaces.
+
+    Prefers the stable /dev/dali symlinks the udev rule creates; falls back to
+    matching raw hidraw nodes by their USB vendor/product in sysfs. This does
+    blocking filesystem I/O and must run in an executor.
+    """
+    symlinks = sorted(glob.glob(HID_SYMLINK_GLOB))
+    if symlinks:
+        return {link: f"DALI-USB ({link.rsplit('-', 1)[-1]})" for link in symlinks}
+    # HID_ID in the device's uevent reads "0003:0000<VID>:0000<PID>" (bus:vid:pid).
+    want = f"HID_ID=0003:{HID_VID:08X}:{HID_PID:08X}"
+    devices: dict[str, str] = {}
+    for sysdir in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        try:
+            with open(
+                os.path.join(sysdir, "device", "uevent"), encoding="utf-8"
+            ) as uevent:
+                content = uevent.read()
+        except OSError:
+            continue
+        if want in content:
+            node = f"/dev/{os.path.basename(sysdir)}"
+            devices[node] = f"DALI-USB ({node})"
+    return devices
 
 
 def _serial_port_label(port: SerialDevice) -> str:
@@ -46,7 +94,21 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         self._device: str | None = None
         self._title: str | None = None
         self._offer_bus_power = False
+        self._interface = INTERFACE_SERIAL
         self._ports: dict[str, SerialDevice] = {}
+        self._hid_devices: dict[str, str] = {}
+
+    async def _async_probe_hid(self, device: str) -> None:
+        """Open the HID interface to confirm it is reachable.
+
+        Raises OSError (including PermissionError when the hidraw node is not
+        accessible) or TimeoutError when the interface cannot be opened.
+        """
+        driver = tridonic(path=device)
+        try:
+            await driver.connect()
+        finally:
+            driver.close()
 
     async def _async_probe(self, device: str) -> bool:
         """Connect to the interface and report whether it can power the bus.
@@ -72,7 +134,26 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle a manually initiated flow by selecting a serial port."""
+        """Choose the interface type, or go straight to the serial port picker.
+
+        A menu is only shown when a HID DALI-USB is detected; otherwise the
+        serial port selector is presented directly, as it always has been.
+        """
+        self._hid_devices = await self.hass.async_add_executor_job(_scan_hid_devices)
+        if self._hid_devices:
+            return self.async_show_menu(step_id="user", menu_options=["serial", "hid"])
+        return await self._async_serial_step(user_input, step_id="serial")
+
+    async def async_step_serial(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select a serial DALI interface after choosing it from the menu."""
+        return await self._async_serial_step(user_input, step_id="serial")
+
+    async def _async_serial_step(
+        self, user_input: dict[str, Any] | None, *, step_id: str
+    ) -> ConfigFlowResult:
+        """Handle selecting a serial port, rendered under the given step id."""
         self._ports = {
             port.device: port for port in await async_scan_serial_ports(self.hass)
         }
@@ -108,9 +189,49 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "cannot_connect"
 
         return self.async_show_form(
-            step_id="user",
+            step_id=step_id,
             data_schema=probatio.Schema(
                 {probatio.Required(CONF_DEVICE): SerialPortSelector()}
+            ),
+            errors=errors,
+        )
+
+    async def async_step_hid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select a Tridonic/Lunatone DALI-USB (HID) interface."""
+        if not self._hid_devices:
+            return self.async_abort(reason="no_hid_devices")
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            device = user_input[CONF_DEVICE]
+            self._async_abort_entries_match({CONF_DEVICE: device})
+            try:
+                await self._async_probe_hid(device)
+            except OSError, TimeoutError:
+                errors["base"] = "cannot_connect"
+            else:
+                self._device = device
+                self._title = self._hid_devices[device]
+                self._interface = INTERFACE_HID
+                # The DALI-USB can switch its bus supply, so always offer it.
+                self._offer_bus_power = True
+                return await self.async_step_bus_power()
+
+        return self.async_show_form(
+            step_id="hid",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(CONF_DEVICE): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=node, label=label)
+                                for node, label in self._hid_devices.items()
+                            ]
+                        )
+                    )
+                }
             ),
             errors=errors,
         )
@@ -171,7 +292,12 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         # waited at the bus-power step; manual ports have no unique ID for the
         # flow manager to deduplicate, so re-check before creating the entry.
         self._async_abort_entries_match({CONF_DEVICE: self._device})
-        return self.async_create_entry(
-            title=self._title,
-            data={CONF_DEVICE: self._device, CONF_BUS_POWER: bus_power},
-        )
+        data: dict[str, Any] = {
+            CONF_DEVICE: self._device,
+            CONF_BUS_POWER: bus_power,
+        }
+        # Serial entries omit the interface key and default to serial, so
+        # existing entries keep working unchanged.
+        if self._interface == INTERFACE_HID:
+            data[CONF_INTERFACE] = INTERFACE_HID
+        return self.async_create_entry(title=self._title, data=data)

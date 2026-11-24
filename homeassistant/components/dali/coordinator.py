@@ -76,14 +76,14 @@ from dali.memory import (
 )
 from dali.memory.location import FlagValue, MemoryBank, MemoryValue
 from dali.sequences import progress
-from dalidrivers.misc.serial import DriverLubaRs232
+from dalidrivers.typed.serial import DriverLubaRs232
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.typing import UNDEFINED
+from homeassistant.helpers.typing import Undefined
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -106,7 +106,7 @@ from .const import (
     unaddressed_control_device_issue_id,
     unaddressed_gear_issue_id,
 )
-from .helpers import MASK_LEVEL, run_sequence
+from .helpers import MASK_LEVEL, DaliDriver, run_sequence
 from .lifetime import (
     BANK_4,
     OPERATING_TIME_VALUES,
@@ -451,7 +451,7 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
     def __init__(
         self,
         hass: HomeAssistant,
-        driver: DriverLubaRs232,
+        driver: DaliDriver,
         config_entry: DaliConfigEntry,
     ) -> None:
         """Initialize the coordinator."""
@@ -560,21 +560,21 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             return
         device_registry.async_update_device(
             device.id,
-            model_id=str(metadata.gtin) if metadata.gtin is not None else UNDEFINED,
+            model_id=str(metadata.gtin) if metadata.gtin is not None else Undefined,
             serial_number=(
                 serial_number
                 if (serial_number := _registry_serial_number(metadata)) is not None
-                else UNDEFINED
+                else Undefined
             ),
             sw_version=(
                 metadata.firmware_version
                 if metadata.firmware_version is not None
-                else UNDEFINED
+                else Undefined
             ),
             hw_version=(
                 metadata.hardware_version
                 if metadata.hardware_version is not None
-                else UNDEFINED
+                else Undefined
             ),
         )
 
@@ -1818,11 +1818,10 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
         return unaddressed
 
     def close(self) -> None:
-        """Close the serial transport."""
+        """Close the driver connection."""
         if self._event_task:
             self._event_task.cancel()
-        if transport := getattr(self.driver, "_transport", None):
-            transport.close()
+        self.driver.close()
 
     def device_data(
         self, address: int, *, input_device: bool = False

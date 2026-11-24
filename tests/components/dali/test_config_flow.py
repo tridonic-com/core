@@ -1,11 +1,19 @@
 """Test the Tridonic DALI config flow."""
 
+from collections.abc import Generator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from pytest_homeassistant.common import MockConfigEntry
 
-from homeassistant.components.dali.const import CONF_BUS_POWER, DOMAIN, luba232_uri
+from homeassistant.components.dali.const import (
+    CONF_BUS_POWER,
+    CONF_INTERFACE,
+    DOMAIN,
+    INTERFACE_HID,
+    luba232_uri,
+)
 from homeassistant.components.usb import (
     SerialDevice,
     USBDevice,
@@ -18,6 +26,20 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.selector import SerialPortSelector
 from homeassistant.helpers.service_info.usb import UsbServiceInfo
+
+
+@pytest.fixture(autouse=True)
+def _no_hid_devices() -> Generator[None]:
+    """Report no HID interfaces by default, so serial tests do not see the menu.
+
+    Keeps the serial flow deterministic regardless of whether a real DALI-USB
+    HID interface is attached to the test host. HID tests patch this again.
+    """
+    with patch(
+        "homeassistant.components.dali.config_flow._scan_hid_devices",
+        return_value={},
+    ):
+        yield
 
 
 def _mock_driver(
@@ -172,7 +194,7 @@ async def test_user_flow(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> No
         )
 
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "user"
+        assert result["step_id"] == "serial"
 
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {CONF_DEVICE: "/dev/ttyACM0"}
@@ -205,7 +227,7 @@ async def test_user_flow_uses_serial_port_selector(hass: HomeAssistant) -> None:
         )
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
+    assert result["step_id"] == "serial"
     assert isinstance(result["data_schema"].schema[CONF_DEVICE], SerialPortSelector)
 
 
@@ -282,7 +304,7 @@ async def test_user_flow_cannot_connect(
         )
 
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "user"
+        assert result["step_id"] == "serial"
         assert result["errors"] == {"base": "cannot_connect"}
 
         driver.return_value.connect = AsyncMock()
@@ -434,3 +456,124 @@ async def test_user_flow_already_configured(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
+
+
+HID_DEVICES = {"/dev/hidraw0": "DALI-USB (/dev/hidraw0)"}
+
+
+def _mock_hid_driver(
+    driver: MagicMock, *, connect_side_effect: type[Exception] | None = None
+) -> None:
+    """Configure a patched HID ``tridonic`` mock for the config flow."""
+    driver.return_value.connect = AsyncMock(side_effect=connect_side_effect)
+    driver.return_value.close = MagicMock()
+
+
+async def test_hid_flow(hass: HomeAssistant, mock_setup_entry: AsyncMock) -> None:
+    """Test the menu offers HID and the HID flow creates a tagged entry."""
+    with (
+        patch(
+            "homeassistant.components.dali.config_flow._scan_hid_devices",
+            return_value=HID_DEVICES,
+        ),
+        patch("homeassistant.components.dali.config_flow.tridonic") as driver,
+    ):
+        _mock_hid_driver(driver)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+        )
+
+        assert result["type"] is FlowResultType.MENU
+        assert result["step_id"] == "user"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "hid"}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "hid"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_DEVICE: "/dev/hidraw0"}
+        )
+
+        # The DALI-USB can switch its bus supply, so bus power is offered.
+        assert result["step_id"] == "bus_power"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_BUS_POWER: False}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        CONF_DEVICE: "/dev/hidraw0",
+        CONF_BUS_POWER: False,
+        CONF_INTERFACE: INTERFACE_HID,
+    }
+    driver.return_value.connect.assert_awaited_once_with()
+    driver.return_value.close.assert_called_once_with()
+    assert result["result"].unique_id is None
+    assert len(mock_setup_entry.mock_calls) == 1
+
+
+async def test_hid_flow_cannot_connect(
+    hass: HomeAssistant, mock_setup_entry: AsyncMock
+) -> None:
+    """Test the HID flow shows an error, then recovers once the node opens."""
+    with (
+        patch(
+            "homeassistant.components.dali.config_flow._scan_hid_devices",
+            return_value=HID_DEVICES,
+        ),
+        patch("homeassistant.components.dali.config_flow.tridonic") as driver,
+    ):
+        _mock_hid_driver(driver, connect_side_effect=PermissionError)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "hid"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_DEVICE: "/dev/hidraw0"}
+        )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "hid"
+        assert result["errors"] == {"base": "cannot_connect"}
+
+        # The udev rule is installed, so a retry now opens the node and finishes.
+        driver.return_value.connect.side_effect = None
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_DEVICE: "/dev/hidraw0"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_BUS_POWER: False}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_INTERFACE] == INTERFACE_HID
+    assert len(mock_setup_entry.mock_calls) == 1
+
+
+async def test_menu_serial_choice(hass: HomeAssistant) -> None:
+    """Test picking serial from the menu reaches the serial port selector."""
+    with (
+        patch(
+            "homeassistant.components.dali.config_flow._scan_hid_devices",
+            return_value=HID_DEVICES,
+        ),
+        patch(
+            "homeassistant.components.dali.config_flow.async_scan_serial_ports",
+            return_value=[USB_PORT],
+        ),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={CONF_SOURCE: SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "serial"}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "serial"
