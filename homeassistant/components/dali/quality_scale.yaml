@@ -72,8 +72,12 @@ rules:
   async-dependency:
     status: done
     comment: >-
-      python-dali's DriverLubaRs232 is asyncio-native; the integration awaits
-      connect/send directly with no executor offloading.
+      Both drivers from dali-drivers' typed package are asyncio-native: the
+      serial DriverLubaRs232 runs on a serialx asyncio transport, and the HID
+      tridonic driver reads the hidraw node through the event loop's
+      add_reader(). The integration awaits connect/send directly; only the
+      config flow's filesystem lookups (HID and serial port scans, by-id path
+      resolution) run in the executor.
   inject-websession:
     status: exempt
     comment: This integration does not make HTTP requests.

@@ -859,7 +859,7 @@ crownstone-sse==2.0.5
 crownstone-uart==2.1.0
 
 # homeassistant.components.dali
-dali-drivers[driver-serial]==0.2
+dali-drivers[driver-serial]==1.0a5
 
 # homeassistant.components.data_grand_lyon
 data-grand-lyon-ha==0.9.0
@@ -2792,7 +2792,7 @@ python-bsblan==6.2.1
 python-citybikes==0.3.3
 
 # homeassistant.components.dali
-python-dali==1.0a2
+python-dali==1.0a3
 
 # homeassistant.components.digital_ocean
 python-digitalocean==1.13.2
