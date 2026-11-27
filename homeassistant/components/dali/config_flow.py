@@ -200,11 +200,14 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Select a Tridonic/Lunatone DALI-USB (HID) interface."""
+        # Rescan like the serial step: the interface may have been unplugged
+        # since the menu (or the previous form) was rendered.
+        self._hid_devices = await self.hass.async_add_executor_job(_scan_hid_devices)
         if not self._hid_devices:
             return self.async_abort(reason="no_hid_devices")
 
         errors: dict[str, str] = {}
-        if user_input is not None:
+        if user_input is not None and user_input[CONF_DEVICE] in self._hid_devices:
             device = user_input[CONF_DEVICE]
             self._async_abort_entries_match({CONF_DEVICE: device})
             try:
@@ -218,6 +221,8 @@ class DaliConfigFlow(ConfigFlow, domain=DOMAIN):
                 # The DALI-USB can switch its bus supply, so always offer it.
                 self._offer_bus_power = True
                 return await self.async_step_bus_power()
+        elif user_input is not None:
+            errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id="hid",

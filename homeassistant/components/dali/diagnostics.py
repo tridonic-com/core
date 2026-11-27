@@ -16,8 +16,6 @@ def _serialize(value: Any) -> Any:
         return value.status
     if isinstance(value, dict):
         return {key: _serialize(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_serialize(item) for item in value]
     return value
 
 
