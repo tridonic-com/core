@@ -22,7 +22,7 @@ from homeassistant.components.dali.coordinator import SCAN_INTERVAL
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_DEVICE
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import device_registry as dr, issue_registry as ir
 
 from .conftest import FakeDaliDriver
 
@@ -125,6 +125,71 @@ async def test_setup_bus_voltage_error_creates_repair(
     assert issue_registry.async_get_issue(
         DOMAIN, bus_voltage_error_issue_id(entry.entry_id)
     )
+
+
+@pytest.mark.parametrize(
+    ("data", "driver_path", "model"),
+    [
+        (
+            {CONF_DEVICE: "/dev/ttyACM0"},
+            "homeassistant.components.dali.DriverLubaRs232",
+            "USB-DALI2 interface",
+        ),
+        (
+            {CONF_DEVICE: "/dev/hidraw0", CONF_INTERFACE: INTERFACE_HID},
+            "homeassistant.components.dali.tridonic",
+            "DALI-USB (HID) interface",
+        ),
+    ],
+)
+async def test_interface_device_model(
+    hass: HomeAssistant,
+    fake_dali_driver: FakeDaliDriver,
+    device_registry: dr.DeviceRegistry,
+    data: dict[str, str],
+    driver_path: str,
+    model: str,
+) -> None:
+    """Test the interface device names the model of the configured dongle."""
+    entry = MockConfigEntry(domain=DOMAIN, data=data)
+    entry.add_to_hass(hass)
+    with patch(driver_path, return_value=fake_dali_driver):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    device = device_registry.async_get_device_by_identifier(
+        (DOMAIN, entry.entry_id), entry.entry_id
+    )
+    assert device is not None
+    assert device.manufacturer == "Lunatone"
+    assert device.model == model
+
+
+async def test_setup_hid_switches_on_bus_power(
+    hass: HomeAssistant, fake_dali_driver: FakeDaliDriver
+) -> None:
+    """Test a HID entry with bus power switches the supply on after connecting."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_DEVICE: "/dev/hidraw0",
+            CONF_INTERFACE: INTERFACE_HID,
+            CONF_BUS_POWER: True,
+        },
+    )
+    entry.add_to_hass(hass)
+    power_supply = AsyncMock()
+    with (
+        patch(
+            "homeassistant.components.dali.tridonic",
+            return_value=fake_dali_driver,
+        ) as driver,
+        patch.object(fake_dali_driver, "power_supply", power_supply, create=True),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+    driver.assert_called_once_with(path="/dev/hidraw0")
+    power_supply.assert_awaited_once_with(True)
+    assert entry.state is ConfigEntryState.LOADED
 
 
 async def test_setup_hid_permission_error_creates_repair(

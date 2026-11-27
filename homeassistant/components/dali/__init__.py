@@ -47,18 +47,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaliConfigEntry) -> None
     """Set up Tridonic DALI from a config entry."""
     bus_power = entry.data.get(CONF_BUS_POWER, False)
     driver: DaliDriver
+    hid_driver: tridonic | None = None
     if entry.data.get(CONF_INTERFACE) == INTERFACE_HID:
-        driver = tridonic(path=entry.data[CONF_DEVICE])
+        driver = hid_driver = tridonic(path=entry.data[CONF_DEVICE])
     else:
         driver = DriverLubaRs232(
             uri=luba232_uri(entry.data[CONF_DEVICE]), bus_power=bus_power
         )
     try:
         await driver.connect(scan_dev_inst=True)
-        if isinstance(driver, tridonic) and bus_power:
+        if hid_driver is not None and bus_power:
             # The serial driver applies its integrated supply during connect()
             # from the constructor flag; the HID driver toggles it afterwards.
-            await driver.power_supply(True)
+            await hid_driver.power_supply(True)
     except TransmissionError as err:
         driver.close()
         raise_bus_voltage_issue(hass, entry, err)

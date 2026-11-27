@@ -88,12 +88,14 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_BUS_POWER,
+    CONF_INTERFACE,
     DEVICE_INSTANCE_TYPE_NAMES,
     DEVICE_TYPE_COLOUR,
     DEVICE_TYPE_EMERGENCY,
     DEVICE_TYPE_LED,
     DOMAIN,
     GEAR_DEVICE_TYPE_NAMES,
+    INTERFACE_HID,
     ISSUE_ADDRESS_COLLISION,
     ISSUE_BUS_OVERLOAD,
     ISSUE_BUS_VOLTAGE_ERROR,
@@ -1898,7 +1900,11 @@ class DaliCoordinator(DataUpdateCoordinator[dict[int, DaliGearData]]):
             identifiers={(DOMAIN, entry_id)},
             name=self._interface_label(title),
             manufacturer="Lunatone",
-            model="USB-DALI2 interface",
+            model=(
+                "DALI-USB (HID) interface"
+                if self.config_entry.data.get(CONF_INTERFACE) == INTERFACE_HID
+                else "USB-DALI2 interface"
+            ),
         )
 
     def _interface_label(self, title: str) -> str:
